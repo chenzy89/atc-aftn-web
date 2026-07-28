@@ -278,12 +278,10 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
                     from datetime import datetime as _ddt, timedelta as _td
                     pd = _ddt.strptime(plan_date, "%Y-%m-%d")
                     _range_start = pd.strftime("%Y-%m-%d")
-                    _range_end = (pd + _td(days=1)).strftime("%Y-%m-%d")
                     # 检查 start_time 或 end_time 的日期是否在范围内
                     _s_date = _start[:10] if len(_start) >= 10 else ""
                     _e_date = _end[:10] if len(_end) >= 10 else ""
-                    if not ((_s_date == _range_start or _s_date == _range_end)
-                            or (_e_date == _range_start or _e_date == _range_end)):
+                    if _s_date != _range_start and _e_date != _range_start:
                         continue
                 except Exception:
                     pass
