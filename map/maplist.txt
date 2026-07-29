@@ -14,3 +14,4 @@ SZ_A_16L	false
 SZ_A_15	false
 SZ_A_16R	false
 MSAW false
+ROUTE_B	true

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.14</title>
+<title>ATC综合数据中心 v2.2.15</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -673,6 +673,7 @@ canvas#radarMap {
     </div>
     <div class="map-top-toolbar">
       <button class="map-tool-btn" onclick="openMapLayers()">🗺 地图</button>
+      <button class="map-tool-btn" id="labelToggleBtn" onclick="toggleLabels()">🏷 标牌</button>
     </div>
     <div class="map-time-label" id="mapTimeLabel">--:--:-- UTC</div>
     <div class="coord-bar" id="coordBar"></div>
@@ -995,6 +996,7 @@ canvas#radarMap {
 
 <script>
 var _MAP_BG = '#0a1628';  // 默认值，加载后从 API 更新
+var _SHOW_LABELS = true;     // 雷达标牌显示开关
 // 异步获取配置中的背景色（改 config.json 刷新页面即生效，无需重启进程）
 fetch('/api/config/map_bg').then(r=>r.json()).then(d=>{ if(d.color) _MAP_BG=d.color }).catch(()=>{});
 // ═══════════════════════════════════════════════════════
@@ -2238,16 +2240,18 @@ function esc(s) {
         var altStr = ('0000' + Math.abs(alt10m)).slice(-4);
 
         // ── 航班号 + 高度标签 ──
-        ctx.fillStyle = labelColor;
-        ctx.font = 'bold 11px Consolas, monospace';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'bottom';
-        var label = (trk.callsign || trk.ssr || '').trim();
-        if (label) {
-          ctx.fillText(label, sp.x + 8, sp.y - 6);
-          ctx.font = '10px Consolas, monospace';
-          ctx.fillStyle = associated ? '#94a3b8' : '#64748b';
-          ctx.fillText(altStr, sp.x + 8, sp.y + 6);
+        if (_SHOW_LABELS) {
+          ctx.fillStyle = labelColor;
+          ctx.font = 'bold 11px Consolas, monospace';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'bottom';
+          var label = (trk.callsign || trk.ssr || '').trim();
+          if (label) {
+            ctx.fillText(label, sp.x + 8, sp.y - 6);
+            ctx.font = '10px Consolas, monospace';
+            ctx.fillStyle = associated ? '#94a3b8' : '#64748b';
+            ctx.fillText(altStr, sp.x + 8, sp.y + 6);
+          }
         }
       }
     }
@@ -3691,6 +3695,17 @@ function esc(s) {
   window.openMapLayers = openMapLayers;
   window.closeMapLayers = closeMapLayers;
   window.fetchTracks = fetchTracks;
+  // ── 标牌开关 ──
+  function toggleLabels() {
+    _SHOW_LABELS = !_SHOW_LABELS;
+    var btn = document.getElementById('labelToggleBtn');
+    if (btn) {
+      btn.style.opacity = _SHOW_LABELS ? '1' : '0.4';
+      btn.style.color = _SHOW_LABELS ? '#e2e8f0' : '#475569';
+    }
+    drawMap();
+  }
+
   window.drawMap = drawMap;
   function startTrackRefresh() {
     if (trackTimer) return;
