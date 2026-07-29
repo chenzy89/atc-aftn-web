@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.18</title>
+<title>ATC综合数据中心 v2.2.19</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -2247,6 +2247,27 @@ function esc(s) {
         ctx.setLineDash([]);
         ctx.fill();
 
+        // ── 1分钟预计线（仅关注机场的航班） ──
+        if (isWatched && trk.heading >= 0 && trk.speed > 0) {
+          var hdg = parseFloat(trk.heading) * Math.PI / 180;
+          var spdKph = parseFloat(trk.speed);
+          var distKm = spdKph / 60;  // 1分钟航行距离
+          var latRad = lat * Math.PI / 180;
+          var dLat = distKm * Math.cos(hdg) / 111.32;
+          var dLon = distKm * Math.sin(hdg) / (111.32 * Math.cos(latRad));
+          var predPt = geo.realToPixel({lat: lat + dLat, lon: lon + dLon});
+          ctx.strokeStyle = '#34d399';
+          ctx.globalAlpha = 0.5;
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(sp.x, sp.y);
+          ctx.lineTo(predPt.x, predPt.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1.0;
+        }
+
         // ── 高度(4位, 单位10m) ──
         var alt10m = 0;
         if (trk.flight_level) {
@@ -3730,7 +3751,8 @@ function esc(s) {
     var overlay = document.getElementById('watchOverlay');
     if (!overlay) return;
     renderWatchAirportList();
-    overlay.classList.add('show');
+    // 延时添加 show 类，避免当前点击事件冒泡到 document 后立即关闭
+    setTimeout(function() { overlay.classList.add('show'); }, 10);
   }
 
   function closeWatchDialog() {
