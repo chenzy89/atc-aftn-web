@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.17</title>
+<title>ATC综合数据中心 v2.2.18</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -674,6 +674,7 @@ canvas#radarMap {
     <div class="map-top-toolbar">
       <button class="map-tool-btn" onclick="openMapLayers()">🗺 地图</button>
       <button class="map-tool-btn" id="radarToggleBtn" onclick="toggleRadar()">雷达</button>
+      <button class="map-tool-btn" onclick="openWatchDialog()">关注</button>
     </div>
     <div class="map-time-label" id="mapTimeLabel">--:--:-- UTC</div>
     <div class="coord-bar" id="coordBar"></div>
@@ -685,6 +686,16 @@ canvas#radarMap {
       <div id="mapLayersList"></div>
       <div class="map-layers-close">
         <button onclick="closeMapLayers()">关闭</button>
+      </div>
+    </div>
+  </div>
+  <!-- ── 关注机场弹窗 ── -->
+  <div class="map-layers-overlay" id="watchOverlay">
+    <div class="map-layers-dialog" style="min-width:340px;">
+      <h3>关注机场</h3>
+      <div id="watchAirportList" style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px 12px;"></div>
+      <div class="map-layers-close">
+        <button onclick="closeWatchDialog()">关闭</button>
       </div>
     </div>
   </div>
@@ -997,6 +1008,7 @@ canvas#radarMap {
 <script>
 var _MAP_BG = '#0a1628';  // 默认值，加载后从 API 更新
 var _SHOW_RADAR = true;      // 雷达信号显示开关（圆点+尾迹+标牌）
+var _WATCHED_AIRPORTS = new Set(['ZGSZ','ZGSD','VMMC','ZGHZ','ZGNT','ZGUH']);
 // 异步获取配置中的背景色（改 config.json 刷新页面即生效，无需重启进程）
 fetch('/api/config/map_bg').then(r=>r.json()).then(d=>{ if(d.color) _MAP_BG=d.color }).catch(()=>{});
 // ═══════════════════════════════════════════════════════
@@ -2206,8 +2218,11 @@ function esc(s) {
 
         // 是否已相关（有起降地）
         var associated = !!(trk.adep && trk.adest);
-        var dotColor = associated ? '#34d399' : '#64748b';
-        var labelColor = associated ? '#34d399' : '#94a3b8';
+        var isWatched = _WATCHED_AIRPORTS.size > 0 && (
+          _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest)
+        );
+        var dotColor = isWatched ? '#34d399' : (associated ? '#34d399' : '#64748b');
+        var labelColor = isWatched ? '#34d399' : (associated ? '#34d399' : '#94a3b8');
 
         // ── 尾迹点 (2px, 透明70%) ──
         var trail = trk.trail;
@@ -2241,16 +2256,30 @@ function esc(s) {
 
         // ── 航班号 + 高度标签 ──
         if (_SHOW_RADAR) {
-          ctx.fillStyle = labelColor;
+          var lblColor = isWatched ? '#34d399' : labelColor;
+          var altLblColor = isWatched ? '#34d399' : (associated ? '#94a3b8' : '#64748b');
+
+          ctx.fillStyle = lblColor;
           ctx.font = 'bold 11px Consolas, monospace';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'bottom';
           var label = (trk.callsign || trk.ssr || '').trim();
           if (label) {
             ctx.fillText(label, sp.x + 8, sp.y - 6);
+
+            // 高度变化箭头
+            var trendChar = '>';
+            if (trk.level_trend === 'c') trendChar = '↑';
+            else if (trk.level_trend === 'd') trendChar = '↓';
+
+            // 速度(4位)
+            var spdVal = 0;
+            if (trk.speed) spdVal = Math.round(parseFloat(trk.speed));
+            var spdStr = ('0000' + Math.abs(spdVal)).slice(-4);
+
             ctx.font = '10px Consolas, monospace';
-            ctx.fillStyle = associated ? '#94a3b8' : '#64748b';
-            ctx.fillText(altStr, sp.x + 8, sp.y + 6);
+            ctx.fillStyle = altLblColor;
+            ctx.fillText(altStr + trendChar + '  ' + spdStr, sp.x + 8, sp.y + 6);
           }
         }
       }
@@ -3695,6 +3724,61 @@ function esc(s) {
   window.openMapLayers = openMapLayers;
   window.closeMapLayers = closeMapLayers;
   window.fetchTracks = fetchTracks;
+
+  // ── 关注机场弹窗 ──
+  function openWatchDialog() {
+    var overlay = document.getElementById('watchOverlay');
+    if (!overlay) return;
+    renderWatchAirportList();
+    overlay.classList.add('show');
+  }
+
+  function closeWatchDialog() {
+    var overlay = document.getElementById('watchOverlay');
+    if (overlay) overlay.classList.remove('show');
+  }
+
+  function renderWatchAirportList() {
+    var container = document.getElementById('watchAirportList');
+    if (!container) return;
+    var airports = ['ZGSZ','ZGSD','VMMC','ZGHZ','ZGNT','ZGUH'];
+    var names = {'ZGSZ':'深圳','ZGSD':'珠海','VMMC':'澳门','ZGHZ':'惠州','ZGNT':'南头','ZGUH':'九州'};
+    var html = '';
+    airports.forEach(function(apt) {
+      var checked = _WATCHED_AIRPORTS.has(apt);
+      html += '<div class="map-layer-item">' +
+        '<input type="checkbox" id="watch_' + apt + '" ' + (checked ? 'checked' : '') +
+        ' onchange="toggleWatchAirport(\'' + apt + '\')">' +
+        '<label for="watch_' + apt + '">' + apt + ' (' + (names[apt] || '') + ')</label></div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function toggleWatchAirport(apt) {
+    if (_WATCHED_AIRPORTS.has(apt)) {
+      _WATCHED_AIRPORTS.delete(apt);
+    } else {
+      _WATCHED_AIRPORTS.add(apt);
+    }
+    drawMap();
+  }
+
+  // 关注机场弹窗点击遮罩关闭
+  document.addEventListener('click', function(e) {
+    var overlay = document.getElementById('watchOverlay');
+    var dialog = document.getElementById('watchOverlay') ?
+      document.querySelector('#watchOverlay .map-layers-dialog') : null;
+    if (overlay && overlay.classList.contains('show') && dialog) {
+      if (!dialog.contains(e.target)) {
+        closeWatchDialog();
+      }
+    }
+  });
+
+  window.openWatchDialog = openWatchDialog;
+  window.closeWatchDialog = closeWatchDialog;
+  window.toggleWatchAirport = toggleWatchAirport;
+  window.renderWatchAirportList = renderWatchAirportList;
   // ── 雷达显示开关 ──
   function toggleRadar() {
     _SHOW_RADAR = !_SHOW_RADAR;
