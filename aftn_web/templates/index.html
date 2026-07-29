@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.19</title>
+<title>ATC综合数据中心 v2.2.20</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -2221,8 +2221,8 @@ function esc(s) {
         var isWatched = _WATCHED_AIRPORTS.size > 0 && (
           _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest)
         );
-        var dotColor = isWatched ? '#34d399' : (associated ? '#34d399' : '#64748b');
-        var labelColor = isWatched ? '#34d399' : (associated ? '#34d399' : '#94a3b8');
+        var dotColor = isWatched ? '#34d399' : '#64748b';
+        var labelColor = isWatched ? '#34d399' : '#94a3b8';
 
         // ── 尾迹点 (2px, 透明70%) ──
         var trail = trk.trail;
@@ -2256,10 +2256,10 @@ function esc(s) {
           var dLat = distKm * Math.cos(hdg) / 111.32;
           var dLon = distKm * Math.sin(hdg) / (111.32 * Math.cos(latRad));
           var predPt = geo.realToPixel({lat: lat + dLat, lon: lon + dLon});
-          ctx.strokeStyle = '#34d399';
-          ctx.globalAlpha = 0.5;
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = '#ffffff';
+          ctx.globalAlpha = 0.4;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([]);
           ctx.beginPath();
           ctx.moveTo(sp.x, sp.y);
           ctx.lineTo(predPt.x, predPt.y);
@@ -2278,7 +2278,7 @@ function esc(s) {
         // ── 航班号 + 高度标签 ──
         if (_SHOW_RADAR) {
           var lblColor = isWatched ? '#34d399' : labelColor;
-          var altLblColor = isWatched ? '#34d399' : (associated ? '#94a3b8' : '#64748b');
+          var altLblColor = isWatched ? '#34d399' : '#64748b';
 
           ctx.fillStyle = lblColor;
           ctx.font = 'bold 11px Consolas, monospace';
