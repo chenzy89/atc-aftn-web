@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.16</title>
+<title>ATC综合数据中心 v2.2.17</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -3698,13 +3698,17 @@ function esc(s) {
   // ── 雷达显示开关 ──
   function toggleRadar() {
     _SHOW_RADAR = !_SHOW_RADAR;
+    console.log('toggleRadar:', _SHOW_RADAR);
     var btn = document.getElementById('radarToggleBtn');
     if (btn) {
       btn.style.opacity = _SHOW_RADAR ? '1' : '0.35';
       btn.style.color = _SHOW_RADAR ? '#e2e8f0' : '#475569';
+    } else {
+      console.log('btn not found');
     }
     drawMap();
   }
+  window.toggleRadar = toggleRadar;
 
   window.drawMap = drawMap;
   function startTrackRefresh() {
