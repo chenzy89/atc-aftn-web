@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.20</title>
+<title>ATC综合数据中心 v2.2.21</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -4166,11 +4166,21 @@ function esc(s) {
         if (pts[i].ts <= ts) { best = pts[i]; } else { break; }
       }
       if (best) {
+        // 计算高度趋势：看下一帧的高度
+        var trend = 'm';
+        if (i < pts.length) {
+          var next = pts[i];
+          if (next && next.fl !== undefined && best.fl !== undefined) {
+            var df = parseFloat(next.fl) - parseFloat(best.fl);
+            if (df > 0.5) trend = 'c';
+            else if (df < -0.5) trend = 'd';
+          }
+        }
         tracks.push({
           callsign: best.cs, ssr: best.ss, latitude: best.lt, longitude: best.ln,
           heading: best.hd, flight_level: best.fl, speed: best.sp,
           adep: best.ap, adest: best.ad, runway: best.rw, flight_procedure: best.fp,
-          trail: [], level_trend: 'm',
+          trail: [], level_trend: trend,
         });
       }
     }

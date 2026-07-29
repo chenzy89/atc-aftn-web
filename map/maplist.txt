@@ -2,7 +2,8 @@ China	true
 BORDER	true
 OBST	false
 MC_A_16	true
-SD_A_23	true
+SD_A_23	false
+SD_A_05	true
 BACKGROUND	false
 NAV_FIX	true
 SZ_D_NORTH	false
