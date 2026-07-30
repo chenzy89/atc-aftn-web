@@ -545,6 +545,7 @@ class FDRStore:
 
             # ── 扇区跟踪 ────────────────────────────────
             sector_idx = parsed.get("sector_index", 0)
+            rec.sector_index = sector_idx
             if sector_idx and rec.callsign and received_at:
                 self._track_sector(rec, sector_idx, received_at)
 
