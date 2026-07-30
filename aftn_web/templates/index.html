@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.22</title>
+<title>ATC综合数据中心 v2.2.23</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -420,7 +420,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.22</span>
+  <span class="badge">v2.2.23</span>
 </div>
 
 <div class="tabs">
@@ -2238,16 +2238,18 @@ function esc(s) {
         if (_WATCHED_AIRPORTS.size > 0) {
           var matchedAirport = _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest);
           if (matchedAirport) {
-            // 有扇区关注时需匹配扇区；无扇区关注时仅匹配机场即可
+            // 无扇区信息视为匹配；有扇区信息时才检查
             if (_WATCHED_SECTORS.size === 0) {
               isWatched = true;
-            } else if (trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
+            } else if (!trk.sector_code || _WATCHED_SECTORS.has(trk.sector_code)) {
               isWatched = true;
             }
           }
-        } else if (_WATCHED_SECTORS.size > 0 && trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
-          // 仅选了扇区未选机场：只看扇区
-          isWatched = true;
+        } else if (_WATCHED_SECTORS.size > 0) {
+          // 仅选了扇区未选机场：无扇区信息视为匹配
+          if (!trk.sector_code || _WATCHED_SECTORS.has(trk.sector_code)) {
+            isWatched = true;
+          }
         }
         var dotColor = isWatched ? '#34d399' : '#64748b';
         var labelColor = isWatched ? '#34d399' : '#94a3b8';
@@ -3847,13 +3849,13 @@ function esc(s) {
     var container = document.getElementById('watchSectorList');
     if (!container) return;
     var sectors = [
-      {code:'ZGJDTM01',name:'TM01 HN (CH38)'},
-      {code:'ZGJDTM02',name:'TM02 HE (CH42)'},
-      {code:'ZGJDTM03',name:'TM03 ARW (CH50)'},
-      {code:'ZGJDTM04',name:'TM04 AS (CH264)'},
-      {code:'ZGJDTM05',name:'TM05 AD (CH46)'},
-      {code:'ZGJDTM06',name:'TM06 ASL (CH32)'},
-      {code:'ZGJDTM07',name:'TM07 ARE/AA (CH54)'},
+      {code:'ZGJDTM01',name:'TM01 HN'},
+      {code:'ZGJDTM02',name:'TM02 HE'},
+      {code:'ZGJDTM03',name:'TM03 ARW'},
+      {code:'ZGJDTM04',name:'TM04 AS'},
+      {code:'ZGJDTM05',name:'TM05 AD'},
+      {code:'ZGJDTM06',name:'TM06 ASL'},
+      {code:'ZGJDTM07',name:'TM07 ARE/AA'},
     ];
     var html = '';
     sectors.forEach(function(s) {
