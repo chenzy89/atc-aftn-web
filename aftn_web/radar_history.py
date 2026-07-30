@@ -116,6 +116,7 @@ class RadarHistoryStore:
             "ad": (parsed.get("adest") or "").strip().upper(),
             "rw": (parsed.get("runway") or "").strip(),
             "fp": (parsed.get("flight_procedure") or "").strip(),
+            "si": parsed.get("sector_index", 0),
         }
 
         line = json.dumps(point, ensure_ascii=False, separators=(",", ":")) + "\n"

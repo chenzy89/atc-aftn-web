@@ -731,6 +731,9 @@ class FDRStore:
                 fl_diff = rec.flight_level - rec.prev_flight_level
                 level_trend = 'c' if abs(fl_diff) > 1.0 and fl_diff > 0 else \
                               'd' if abs(fl_diff) > 1.0 else 'm'
+                sector_code = ""
+                if rec.sector_index > 0 and rec.sector_index <= len(self._SECTOR_MAP):
+                    _, sector_code = self._SECTOR_MAP[rec.sector_index - 1]
                 tracks.append({
                     "callsign": rec.callsign,
                     "ssr": rec.ssr,
@@ -746,6 +749,7 @@ class FDRStore:
                     "runway": rec.runway,
                     "flight_procedure": rec.flight_procedure,
                     "in_terminal": rec.in_terminal,
+                    "sector_code": sector_code,
                 })
             return tracks
 

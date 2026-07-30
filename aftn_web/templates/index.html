@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.21</title>
+<title>ATC综合数据中心 v2.2.22</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -420,7 +420,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.14</span>
+  <span class="badge">v2.2.22</span>
 </div>
 
 <div class="tabs">
@@ -674,7 +674,8 @@ canvas#radarMap {
     <div class="map-top-toolbar">
       <button class="map-tool-btn" onclick="openMapLayers()">🗺 地图</button>
       <button class="map-tool-btn" id="radarToggleBtn" onclick="toggleRadar()">雷达</button>
-      <button class="map-tool-btn" onclick="openWatchDialog()">关注</button>
+      <button class="map-tool-btn" onclick="openWatchDialog()">机场</button>
+      <button class="map-tool-btn" onclick="openWatchSectorDialog()">扇区</button>
     </div>
     <div class="map-time-label" id="mapTimeLabel">--:--:-- UTC</div>
     <div class="coord-bar" id="coordBar"></div>
@@ -696,6 +697,17 @@ canvas#radarMap {
       <div id="watchAirportList" style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px 12px;"></div>
       <div class="map-layers-close">
         <button onclick="closeWatchDialog()">关闭</button>
+      </div>
+    </div>
+  </div>
+  <!-- ── 关注扇区弹窗 ── -->
+  <div class="map-layers-overlay" id="watchSectorOverlay">
+    <div class="map-layers-dialog" style="min-width:360px;">
+      <h3>关注扇区</h3>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">勾选后仅同时满足机场和扇区的航班标牌为绿色</div>
+      <div id="watchSectorList" style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px 12px;"></div>
+      <div class="map-layers-close">
+        <button onclick="closeWatchSectorDialog()">关闭</button>
       </div>
     </div>
   </div>
@@ -1009,6 +1021,9 @@ canvas#radarMap {
 var _MAP_BG = '#0a1628';  // 默认值，加载后从 API 更新
 var _SHOW_RADAR = true;      // 雷达信号显示开关（圆点+尾迹+标牌）
 var _WATCHED_AIRPORTS = new Set(['ZGSZ','ZGSD','VMMC','ZGHZ','ZGNT','ZGUH']);
+var _WATCHED_SECTORS = new Set();  // 关注扇区，默认全部不选
+// sector_index(1-based) → 终端代码，与 SectorInfo.txt 序号一致
+var _SECTOR_IDX_TO_CODE = ['', 'ZGJDTM02', 'ZGJDTM01', 'ZGJDTM04', 'ZGJDTM03', 'ZGJDTM07', 'ZGJDTM06', 'ZGJDTM05', 'ZGJDTM07'];
 // 异步获取配置中的背景色（改 config.json 刷新页面即生效，无需重启进程）
 fetch('/api/config/map_bg').then(r=>r.json()).then(d=>{ if(d.color) _MAP_BG=d.color }).catch(()=>{});
 // ═══════════════════════════════════════════════════════
@@ -2218,9 +2233,22 @@ function esc(s) {
 
         // 是否已相关（有起降地）
         var associated = !!(trk.adep && trk.adest);
-        var isWatched = _WATCHED_AIRPORTS.size > 0 && (
-          _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest)
-        );
+        // 关注：同时满足机场 AND 扇区
+        var isWatched = false;
+        if (_WATCHED_AIRPORTS.size > 0) {
+          var matchedAirport = _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest);
+          if (matchedAirport) {
+            // 有扇区关注时需匹配扇区；无扇区关注时仅匹配机场即可
+            if (_WATCHED_SECTORS.size === 0) {
+              isWatched = true;
+            } else if (trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
+              isWatched = true;
+            }
+          }
+        } else if (_WATCHED_SECTORS.size > 0 && trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
+          // 仅选了扇区未选机场：只看扇区
+          isWatched = true;
+        }
         var dotColor = isWatched ? '#34d399' : '#64748b';
         var labelColor = isWatched ? '#34d399' : '#94a3b8';
 
@@ -3801,6 +3829,68 @@ function esc(s) {
   window.closeWatchDialog = closeWatchDialog;
   window.toggleWatchAirport = toggleWatchAirport;
   window.renderWatchAirportList = renderWatchAirportList;
+
+  // ── 关注扇区弹窗 ──
+  function openWatchSectorDialog() {
+    var overlay = document.getElementById('watchSectorOverlay');
+    if (!overlay) return;
+    renderWatchSectorList();
+    setTimeout(function() { overlay.classList.add('show'); }, 10);
+  }
+
+  function closeWatchSectorDialog() {
+    var overlay = document.getElementById('watchSectorOverlay');
+    if (overlay) overlay.classList.remove('show');
+  }
+
+  function renderWatchSectorList() {
+    var container = document.getElementById('watchSectorList');
+    if (!container) return;
+    var sectors = [
+      {code:'ZGJDTM01',name:'TM01 HN (CH38)'},
+      {code:'ZGJDTM02',name:'TM02 HE (CH42)'},
+      {code:'ZGJDTM03',name:'TM03 ARW (CH50)'},
+      {code:'ZGJDTM04',name:'TM04 AS (CH264)'},
+      {code:'ZGJDTM05',name:'TM05 AD (CH46)'},
+      {code:'ZGJDTM06',name:'TM06 ASL (CH32)'},
+      {code:'ZGJDTM07',name:'TM07 ARE/AA (CH54)'},
+    ];
+    var html = '';
+    sectors.forEach(function(s) {
+      var checked = _WATCHED_SECTORS.has(s.code);
+      html += '<div class="map-layer-item">' +
+        '<input type="checkbox" id="ws_' + s.code + '" ' + (checked ? 'checked' : '') +
+        ' onchange="toggleWatchSector(\'' + s.code + '\')">' +
+        '<label for="ws_' + s.code + '">' + s.code + ' ' + s.name + '</label></div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function toggleWatchSector(code) {
+    if (_WATCHED_SECTORS.has(code)) {
+      _WATCHED_SECTORS.delete(code);
+    } else {
+      _WATCHED_SECTORS.add(code);
+    }
+    drawMap();
+  }
+
+  // 关注扇区弹窗点击遮罩关闭
+  document.addEventListener('click', function(e) {
+    var overlay = document.getElementById('watchSectorOverlay');
+    var dialog = document.getElementById('watchSectorOverlay') ?
+      document.querySelector('#watchSectorOverlay .map-layers-dialog') : null;
+    if (overlay && overlay.classList.contains('show') && dialog) {
+      if (!dialog.contains(e.target)) {
+        closeWatchSectorDialog();
+      }
+    }
+  });
+
+  window.openWatchSectorDialog = openWatchSectorDialog;
+  window.closeWatchSectorDialog = closeWatchSectorDialog;
+  window.toggleWatchSector = toggleWatchSector;
+  window.renderWatchSectorList = renderWatchSectorList;
   // ── 雷达显示开关 ──
   function toggleRadar() {
     _SHOW_RADAR = !_SHOW_RADAR;
@@ -4166,6 +4256,12 @@ function esc(s) {
         if (pts[i].ts <= ts) { best = pts[i]; } else { break; }
       }
       if (best) {
+        // 超过10秒无位置更新 → 视为已消失，不显示标牌
+        var tsMs = new Date(ts).getTime();
+        var bestMs = new Date(best.ts).getTime();
+        if (tsMs - bestMs > 10000) {
+          continue;
+        }
         // 计算高度趋势：看下一帧的高度
         var trend = 'm';
         if (i < pts.length) {
@@ -4176,11 +4272,16 @@ function esc(s) {
             else if (df < -0.5) trend = 'd';
           }
         }
+        // 通过 sector_index 查找扇区代码
+        var sectorCode = '';
+        if (best.si && best.si > 0 && best.si < _SECTOR_IDX_TO_CODE.length) {
+          sectorCode = _SECTOR_IDX_TO_CODE[best.si];
+        }
         tracks.push({
           callsign: best.cs, ssr: best.ss, latitude: best.lt, longitude: best.ln,
           heading: best.hd, flight_level: best.fl, speed: best.sp,
           adep: best.ap, adest: best.ad, runway: best.rw, flight_procedure: best.fp,
-          trail: [], level_trend: trend,
+          trail: [], level_trend: trend, sector_code: sectorCode,
         });
       }
     }
