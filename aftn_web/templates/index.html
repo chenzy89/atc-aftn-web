@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.23</title>
+<title>ATC综合数据中心 v2.2.24</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -420,7 +420,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.23</span>
+  <span class="badge">v2.2.24</span>
 </div>
 
 <div class="tabs">
@@ -2235,22 +2235,21 @@ function esc(s) {
         var associated = !!(trk.adep && trk.adest);
         // 关注：同时满足机场 AND 扇区
         var isWatched = false;
-        if (_WATCHED_AIRPORTS.size > 0) {
-          var matchedAirport = _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest);
-          if (matchedAirport) {
-            // 无扇区信息视为匹配；有扇区信息时才检查
-            if (_WATCHED_SECTORS.size === 0) {
+        if (_WATCHED_SECTORS.size > 0) {
+          if (_WATCHED_AIRPORTS.size > 0) {
+            // 有扇区有机场：需同时匹配扇区和机场
+            var matchedAirport = _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest);
+            if (matchedAirport && trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
               isWatched = true;
-            } else if (!trk.sector_code || _WATCHED_SECTORS.has(trk.sector_code)) {
+            }
+          } else {
+            // 仅选了扇区未选机场：匹配扇区即可
+            if (trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
               isWatched = true;
             }
           }
-        } else if (_WATCHED_SECTORS.size > 0) {
-          // 仅选了扇区未选机场：无扇区信息视为匹配
-          if (!trk.sector_code || _WATCHED_SECTORS.has(trk.sector_code)) {
-            isWatched = true;
-          }
         }
+        // 未选扇区 → 全部灰色
         var dotColor = isWatched ? '#34d399' : '#64748b';
         var labelColor = isWatched ? '#34d399' : '#94a3b8';
 
