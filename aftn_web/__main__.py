@@ -465,26 +465,22 @@ def main(argv: list[str] | None = None) -> int:
     total_received = [0]
     total_parsed = [0]
 
-    def on_aftn_message(payload: bytes, addr: str, port: int, received_at: datetime) -> None:
-        nonlocal total_received, total_parsed
-        total_received[0] += 1
+    # ── AFTN 分片重组状态（数据源会把一份电报切成多个 UDP 包）──
+    _AFTN_TERMINATOR = "\x03"       # ETX：AFTN 电报终止标志符
+    _AFTN_BUFFER_MAX = 512 * 1024    # 重组缓冲区上限，防内存无限增长
+    _aftn_buffer = ""
 
-        # ── 提取原始文本 ─────────────────────────────────────
-        raw_text = ""
-        if isinstance(payload, bytes):
-            raw_text = payload.decode("utf-8", errors="replace")
-        elif isinstance(payload, str):
-            raw_text = payload
-        elif isinstance(payload, dict):
-            raw_text = str(payload.get("MessageText", payload.get("message_text", payload.get("raw_text", ""))))
+    def _handle_telegram(text: str, addr: str, port: int, received_at: datetime) -> None:
+        """处理一条已拼装完整的 AFTN 电报（含多报文粘连拆分）"""
+        nonlocal total_received, total_parsed
 
         # ── 检测多报文粘连 ──────────────────────────────────
         # 优先判断是否为 JSON 包装格式，若是则解包后对 MessageText 做拆分
-        _unwrapped_text = raw_text
-        if raw_text.strip().startswith("{") and "MessageText" in raw_text:
+        _unwrapped_text = text
+        if text.strip().startswith("{") and "MessageText" in text:
             try:
-                _parsed = json.loads(raw_text)
-                _unwrapped_text = _parsed.get("MessageText", raw_text)
+                _parsed = json.loads(text)
+                _unwrapped_text = _parsed.get("MessageText", text)
                 logger.debug("JSON 报文解包: len=%d", len(_unwrapped_text))
             except json.JSONDecodeError:
                 pass  # 非标准 JSON，按原始文本处理
@@ -494,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("多报文粘连: %d 份子报文 <- %s:%d", len(sub_messages), addr, port)
             _iter_payloads: list = sub_messages
         else:
-            _iter_payloads = [payload]
+            _iter_payloads = [text]
 
         for _sub_payload in _iter_payloads:
             try:
@@ -711,6 +707,54 @@ def main(argv: list[str] | None = None) -> int:
                 total_received[0],
                 total_parsed[0],
             )
+
+    def on_aftn_message(payload: bytes, addr: str, port: int, received_at: datetime) -> None:
+        """UDP 回调：分片缓存，遇到 ETX(\x03) 终止符才切出完整电报处理"""
+        nonlocal total_received, _aftn_buffer
+        total_received[0] += 1
+
+        # ── 提取原始文本 ─────────────────────────────────────
+        raw_text = ""
+        if isinstance(payload, bytes):
+            raw_text = payload.decode("utf-8", errors="replace")
+        elif isinstance(payload, str):
+            raw_text = payload
+        elif isinstance(payload, dict):
+            raw_text = str(payload.get("MessageText", payload.get("message_text", payload.get("raw_text", ""))))
+
+        if not raw_text:
+            return
+
+        # ── 分片重组：缓存直到出现报文终止标志符（ETX \x03）──
+        _aftn_buffer += raw_text
+
+        # 缓冲区上限保护：超限强制处理（防数据源异常导致积压/内存膨胀）
+        if len(_aftn_buffer) > _AFTN_BUFFER_MAX:
+            logger.warning(
+                "AFTN 重组缓冲区超限(%d>%d)，强制处理残余数据",
+                len(_aftn_buffer), _AFTN_BUFFER_MAX,
+            )
+            try:
+                _handle_telegram(_aftn_buffer.strip(), addr, port, received_at)
+            except Exception:
+                logger.exception("AFTN telegram handler error (buffer overflow)")
+            _aftn_buffer = ""
+            return
+
+        # 循环切出所有完整电报（一个 UDP 包可能包含多条完整电报）
+        while True:
+            idx = _aftn_buffer.find(_AFTN_TERMINATOR)
+            if idx < 0:
+                break
+            complete = _aftn_buffer[:idx]
+            _aftn_buffer = _aftn_buffer[idx + 1:]
+            complete = complete.strip()
+            if not complete:
+                continue
+            try:
+                _handle_telegram(complete, addr, port, received_at)
+            except Exception:
+                logger.exception("AFTN telegram handler error")
 
     receiver = UdpReceiver(config.aftn, on_aftn_message)
     receiver.start()

@@ -4,26 +4,26 @@
   "network": {
     "aftn": {
       "bind_host": "0.0.0.0",
-      "port": 31031,
-      "multicast_group": "229.31.31.31",
-      "interface_ip": "172.50.100.76"
+      "port": 40001,
+      "multicast_group": "238.1.1.1",
+      "interface_ip": "192.168.15.32"
     },
     "radar": {
       "multicast_group": "228.28.28.28",
       "port": 8107,
-      "interface_ip": "172.50.100.76",
+      "interface_ip": "192.168.15.32",
       "enabled": true
     },
     "voice": {
       "multicast_group": "238.1.1.1",
       "port": 5001,
-      "interface_ip": "172.50.100.76",
+      "interface_ip": "192.168.15.32",
       "enabled": true
     },
     "asr": {
       "multicast_group": "229.33.33.33",
       "port": 33033,
-      "interface_ip": "172.50.100.76",
+      "interface_ip": "192.168.15.32",
       "enabled": true
     }
   },
