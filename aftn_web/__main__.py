@@ -470,9 +470,39 @@ def main(argv: list[str] | None = None) -> int:
     _AFTN_BUFFER_MAX = 512 * 1024    # 重组缓冲区上限，防内存无限增长
     _aftn_buffer = ""
 
+    def _clean_aftn_text(raw_text: str, keep_etx: bool = False) -> str:
+        """清洗 AFTN 报文文本：
+        1. 统一行分隔符为 \r\n（\r\r\n → \r\n，孤立 \r / \n → \r\n）
+        2. 去掉控制符 SOH(\x01) / STX(\x02) / VT(\x0b) / ETX(\x03) 等（保留 \r \n \t；
+           分片重组阶段需保留 ETX 时传 keep_etx=True）
+        """
+        if not raw_text:
+            return raw_text
+        # ── 1. 统一换行：先合并 \r\r\n，再归一化孤立 CR/LF ──
+        s = raw_text.replace("\r\r\n", "\r\n")
+        s = s.replace("\r\n", "\n")   # 临时统一为 \n
+        s = s.replace("\r", "\n")      # 孤立 CR → \n
+        s = s.replace("\n", "\r\n")    # 统一为 \r\n
+        # ── 2. 去掉控制符（保留 \r \n \t；ETX 按需保留）──
+        out = []
+        for ch in s:
+            o = ord(ch)
+            if o in (0x0D, 0x0A, 0x09):
+                out.append(ch)
+            elif o == 0x03 and keep_etx:
+                out.append(ch)
+            elif o < 0x20 or o == 0x7F:
+                continue  # 丢弃 SOH/STX/VT/ETX 及其它 C0 控制符
+            else:
+                out.append(ch)
+        return "".join(out)
+
     def _handle_telegram(text: str, addr: str, port: int, received_at: datetime) -> None:
         """处理一条已拼装完整的 AFTN 电报（含多报文粘连拆分）"""
         nonlocal total_received, total_parsed
+
+        # ── 兜底清洗：去掉残留控制符（含 ETX），统一换行 ──
+        text = _clean_aftn_text(text)
 
         # ── 检测多报文粘连 ──────────────────────────────────
         # 优先判断是否为 JSON 包装格式，若是则解包后对 MessageText 做拆分
@@ -724,6 +754,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if not raw_text:
             return
+
+        # ── 清洗：统一 \r\n 分行、去掉控制符（保留 ETX 用于分片切分）──
+        raw_text = _clean_aftn_text(raw_text, keep_etx=True)
 
         # ── 分片重组：缓存直到出现报文终止标志符（ETX \x03）──
         _aftn_buffer += raw_text
