@@ -27,6 +27,12 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._init_db()
+        # 启动时迁移存量 ASR 语音文件路径（D:\... → file:///mnt/...）
+        try:
+            self.migrate_asr_wavpath()
+        except Exception:
+            import logging
+            logging.getLogger("aftn_web.db").exception("ASR wavpath 迁移失败")
 
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -1432,6 +1438,73 @@ class Database:
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         row = conn.execute(f"SELECT COUNT(*) FROM asr_text {where}", params).fetchone()
         return row[0] if row else 0
+
+    def migrate_asr_wavpath(self) -> int:
+        """迁移存量 wavfilepath：Windows 盘符路径 D:\... → file:///mnt/..."""
+        import re
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, wavfilepath FROM asr_text WHERE wavfilepath != ''"
+        ).fetchall()
+        updated = 0
+        for rid, raw in rows:
+            if not raw or raw.startswith("file://"):
+                continue
+            if raw.startswith("/"):
+                new_path = "file://" + raw.replace("\\", "/")
+            else:
+                m = re.match(r'^[A-Za-z]:[\\/]+(.*)$', raw)
+                if m:
+                    new_path = "file:///mnt/" + m.group(1).replace("\\", "/")
+                else:
+                    new_path = "file:///mnt/" + raw.replace("\\", "/")
+            conn.execute("UPDATE asr_text SET wavfilepath = ? WHERE id = ?",
+                         (new_path, rid))
+            updated += 1
+        if updated:
+            conn.commit()
+        return updated
+
+    def query_asr_for_replay(self, sector: str, t_str: str,
+                             lookback: float = 10.0, lookahead: float = 5.0,
+                             limit: int = 10) -> list[dict]:
+        """回放用：查询 t_str 时刻该扇区正在进行的语音记录
+
+        t_str 格式 YYYY-MM-DD HH:MM:SS（UTC）。匹配条件：
+        wavbegintime <= t <= wavbegintime + duration，以及 t 之后 2 秒内即将开始的语音。
+        存量数据 wavbegintime 为空时用 received_at（接收时刻）兜底。
+        """
+        from datetime import datetime, timedelta
+        try:
+            t = datetime.strptime(str(t_str)[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return []
+        t_from = (t - timedelta(seconds=lookback)).strftime("%Y-%m-%d %H:%M:%S")
+        t_to = (t + timedelta(seconds=lookahead)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT * FROM asr_text
+               WHERE sector = ?
+                 AND wavfilepath != ''
+                 AND COALESCE(NULLIF(wavbegintime,''), received_at) >= ?
+                 AND COALESCE(NULLIF(wavbegintime,''), received_at) <= ?
+               ORDER BY COALESCE(NULLIF(wavbegintime,''), received_at) ASC
+               LIMIT ?""",
+            (sector, t_from, t_to, limit),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                bt_str = str(d.get("wavbegintime") or d.get("received_at") or "")[:19]
+                bt = datetime.strptime(bt_str, "%Y-%m-%d %H:%M:%S")
+                end = bt + timedelta(seconds=float(d.get("duration") or 0))
+                # 正在进行的通话，或即将开始（2 秒内）
+                if bt <= t <= end or (t < bt and (bt - t).total_seconds() <= 2.0):
+                    result.append(d)
+            except Exception:
+                continue
+        return result
 
     def backfill_asr_wavbegintime(self) -> int:
         """回填 asr_text 中 wavbegintime 为空的记录，从 received_at 补"""

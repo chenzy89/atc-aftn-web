@@ -223,18 +223,47 @@ class AsrReceiver:
 
         return ""
 
+    @staticmethod
+    def _normalize_wavpath(raw: str) -> str:
+        r"""Windows 语音文件路径 → 浏览器可访问路径
+
+        D:\asr-cmdwav\2026.08.04utc\...\x.wav
+            → file:///mnt/asr-cmdwav/2026.08.04utc/.../x.wav
+        规则：去掉盘符前缀（D:\），换成挂载目录 file:///mnt/，反斜杠转正斜杠
+        """
+        if not raw:
+            return ""
+        p = str(raw).strip()
+        # 已是 file:// 协议（原样，仅规整斜杠）
+        if p.startswith("file://"):
+            return p.replace("\\", "/")
+        # Linux 绝对路径 → 加 file:// 前缀
+        if p.startswith("/"):
+            return "file://" + p.replace("\\", "/")
+        # Windows 盘符路径: D:\... 或 D:/... → file:///mnt/...
+        import re
+        m = re.match(r'^[A-Za-z]:[\\/]+(.*)$', p)
+        if m:
+            return "file:///mnt/" + m.group(1).replace("\\", "/")
+        # 其他：当作相对挂载目录的路径
+        return "file:///mnt/" + p.replace("\\", "/")
+
     def _process_asr_payload(self, payload: dict) -> None:
         """处理单条 ASR 文本
 
-        预期字段：wavbegintime, processedCommand, callsign, sector, speaker, duration, wavfilepath
+        预期字段（兼容驼峰/小写）：wavBeginTime/wavbegintime, processedCommand,
+        callsign, sector, speaker, duration, wavFilePath/wavfilepath
         """
-        wavbegintime = str(payload.get("wavbegintime") or "")
+        # 兼容大小写字段名（实际数据源为驼峰 wavBeginTime / wavFilePath）
+        wavbegintime = str(payload.get("wavBeginTime") or payload.get("wavbegintime") or "")
         processedCommand = str(payload.get("processedCommand") or "")
         callsign = str(payload.get("callsign") or "").upper()
         sector = str(payload.get("sector") or "").upper()
         speaker = str(payload.get("speaker") or "")
         duration = float(payload.get("duration") or 0)
-        wavfilepath = str(payload.get("wavfilepath") or "")
+        wavfilepath = self._normalize_wavpath(
+            payload.get("wavFilePath") or payload.get("wavfilepath") or ""
+        )
 
         if not sector:
             logger.debug("ASR: 缺少 sector 字段，忽略")

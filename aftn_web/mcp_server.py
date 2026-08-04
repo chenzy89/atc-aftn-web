@@ -378,7 +378,7 @@ class MCPServer:
                 },
                 "serverInfo": {
                     "name": "atc-datahub",
-                    "version": "2.1.62",
+                    "version": "2.2.27",
                 },
             }
         elif method == "notifications/initialized":

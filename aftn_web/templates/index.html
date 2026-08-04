@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.26</title>
+<title>ATC综合数据中心 v2.2.27</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -420,7 +420,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.26</span>
+  <span class="badge">v2.2.27</span>
 </div>
 
 <div class="tabs">
@@ -3968,13 +3968,12 @@ function esc(s) {
   // 扇区 → 通道号映射
   var _SEC_CH = {'ZGJDTM01':38,'ZGJDTM02':42,'ZGJDTM03':50,'ZGJDTM04':264,'ZGJDTM05':46,'ZGJDTM06':32,'ZGJDTM07':54};
 
-  // 语音同步
-  var _voiceAudio = null;          // Audio 元素
-  var _voiceUrl = null;            // blob URL
-  var _voiceLoaded = false;        // 语音数据是否已加载
-  var _voiceRangeStart = 0;        // 语音对应 UTC 起始时间 (ms)
-  var _voiceRangeEnd = 0;          // 语音对应 UTC 结束时间 (ms)
-  var _voiceSyncEnabled = false;   // 是否启用语音同步
+  // 语音同步（ASR 识别文件，按时间+扇区索引）
+  var _asrAudio = null;          // Audio 元素（当前 ASR 语音）
+  var _currentAsrId = null;      // 当前播放的 ASR 记录 id
+  var _asrPollTimer = null;      // 轮询定时器
+  var _asrPolling = false;       // 是否正在轮询（防重入）
+  var _voiceSyncEnabled = false; // 是否启用语音
   var _voiceStatusEl = document.getElementById('pbVoiceStatus');
 
   // DOM refs
@@ -4031,101 +4030,97 @@ function esc(s) {
   function showReplayLoading() { var e=document.getElementById('replay-loading');if(e)e.style.display='flex'; }
   function hideReplayLoading() { var e=document.getElementById('replay-loading');if(e)e.style.display='none'; }
 
-  // ── 语音同步 ──
-  function _loadVoiceSync(sectorCode) {
-    _voiceSyncEnabled = false;
-    _voiceLoaded = false;
-    if (_voiceUrl) { URL.revokeObjectURL(_voiceUrl); _voiceUrl = null; }
-    if (_voiceAudio) { _voiceAudio.pause(); _voiceAudio = null; }
-
-    if (!sectorCode) {
-      if (_voiceStatusEl) _voiceStatusEl.textContent = '';
-      return;
-    }
-    var ch = _SEC_CH[sectorCode];
-    if (!ch) {
-      if (_voiceStatusEl) _voiceStatusEl.textContent = '扇区无对应通道';
-      return;
-    }
-
-    var parts = el.date.value.split('-');
-    var utcDateStr = el.date.value;
-    var fromH = pad2(parseInt(el.hour.value));
-    var fromM = pad2(parseInt(el.min.value));
-    var fromS = pad2(parseInt(el.sec.value));
-    var fromTime = fromH + ':' + fromM + ':' + fromS;
-
-    if (_voiceStatusEl) _voiceStatusEl.textContent = '加载语音...';
-
-    var url = '/api/voice/play_file?date=' + encodeURIComponent(utcDateStr)
-      + '&channel=' + ch + '&from=' + encodeURIComponent(fromTime) + '&duration=30';
-
-    fetch(url)
-      .then(function(r) {
-        if (!r.ok) throw new Error('无语音数据');
-        return r.blob();
-      })
-      .then(function(blob) {
-        if (blob.size < 100) throw new Error('语音数据过小');
-        _voiceUrl = URL.createObjectURL(blob);
-        _voiceAudio = new Audio(_voiceUrl);
-        _voiceAudio.preload = 'auto';
-        _voiceLoaded = true;
-        _voiceSyncEnabled = true;
-
-        // 如果回放已经在播放，自动开始语音
-        if (state === STATE.PLAYING) {
-          _syncVoicePosition();
-          _voiceAudio.play().catch(function(){});
-        }
-
-        // 计算语音时间范围 (ms)
-        var startMs = Date.UTC(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]),
-          parseInt(el.hour.value), parseInt(el.min.value), parseInt(el.sec.value));
-        _voiceRangeStart = startMs;
-        _voiceRangeEnd = startMs + 30 * 60 * 1000;
-
-        var sizeStr = blob.size > 1024*1024
-          ? (blob.size/1024/1024).toFixed(1)+'MB'
-          : (blob.size/1024).toFixed(1)+'KB';
-        if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCode + ' CH' + ch + ' ' + sizeStr;
-      })
-      .catch(function(e) {
-        if (_voiceStatusEl) _voiceStatusEl.textContent = '语音: ' + e.message;
-        _voiceLoaded = false;
-        _voiceSyncEnabled = false;
-      });
+  // ── 语音同步（ASR 语音文件，按回放时间 + 扇区索引） ──
+  function _asrPlaybackTimeStr() {
+    // 当前回放时间 → YYYY-MM-DD HH:MM:SS (UTC)
+    if (!replayCurrentTime) return '';
+    var d = new Date(replayCurrentTime);
+    return d.getUTCFullYear()+'-'+pad2(d.getUTCMonth()+1)+'-'+pad2(d.getUTCDate())
+      + ' ' + pad2(d.getUTCHours())+':'+pad2(d.getUTCMinutes())+':'+pad2(d.getUTCSeconds());
   }
 
-  function _syncVoicePosition() {
-    if (!_voiceSyncEnabled || !_voiceAudio || !_voiceLoaded || !replayCurrentTime || !replayStartTime) return;
-    try {
-      var replayMs = new Date(replayCurrentTime).getTime();
-      var startMs = _voiceRangeStart;
-      var offsetSec = (replayMs - startMs) / 1000;
-      if (offsetSec >= 0 && offsetSec < _voiceAudio.duration) {
-        _voiceAudio.currentTime = offsetSec;
-      }
-    } catch(e) {}
+  function _asrPlay() {
+    // 按当前回放时间 + 选中扇区查询正在进行的语音并播放
+    var sectorCode = el.sector ? el.sector.value : '';
+    if (!sectorCode) return; // 没选扇区 → 不播放语音
+    if (!replayCurrentTime) return;
+    if (_asrPolling) return;
+    _asrPolling = true;
+
+    var t = _asrPlaybackTimeStr();
+    var dateStr = t.split(' ')[0];
+    var timeStr = t.split(' ')[1] || '';
+    var url = '/api/asr/replay?sector=' + encodeURIComponent(sectorCode)
+      + '&date=' + encodeURIComponent(dateStr)
+      + '&time=' + encodeURIComponent(timeStr) + '&window=6';
+
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(records) {
+        if (state !== STATE.PLAYING) return;
+        var rec = (records && records.length) ? records[0] : null;
+        if (rec && rec.wavfilepath) {
+          if (rec.id === _currentAsrId && _asrAudio && !_asrAudio.paused) {
+            // 正在播同一条，无需切换
+            return;
+          }
+          _stopVoice();
+          _currentAsrId = rec.id;
+          var audio = new Audio('/api/asr/wav?path=' + encodeURIComponent(rec.wavfilepath));
+          audio.preload = 'auto';
+          audio.playbackRate = replaySpeed || 1;
+          audio.onended = function() {
+            if (_currentAsrId === rec.id) _currentAsrId = null;
+          };
+          audio.play().catch(function(){});
+          _asrAudio = audio;
+          if (_voiceStatusEl) {
+            var cs = rec.callsign || '';
+            var txt = (rec.processedCommand || '').slice(0, 30);
+            _voiceStatusEl.textContent = '🎧 ' + (cs ? cs + ' ' : '') + txt;
+          }
+        } else {
+          // 当前时刻无语音
+          if (_asrAudio && !_asrAudio.paused) { _asrAudio.pause(); }
+          if (_currentAsrId !== null) {
+            _currentAsrId = null;
+            if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCode + ' 等待语音...';
+          }
+        }
+      })
+      .catch(function() {})
+      .finally(function() { _asrPolling = false; });
+  }
+
+  function _startAsrPolling() {
+    if (_asrPollTimer) clearInterval(_asrPollTimer);
+    _asrPollTimer = setInterval(_asrPlay, 900);
+    _asrPlay();
+  }
+
+  function _stopAsrPolling() {
+    if (_asrPollTimer) { clearInterval(_asrPollTimer); _asrPollTimer = null; }
   }
 
   function _pauseVoice() {
-    if (_voiceAudio && _voiceLoaded) { _voiceAudio.pause(); }
+    if (_asrAudio) { _asrAudio.pause(); }
   }
 
   function _startVoice() {
-    if (!_voiceSyncEnabled || !_voiceAudio || !_voiceLoaded) return;
+    if (!_voiceSyncEnabled || !_asrAudio) return;
     try {
-      _syncVoicePosition();
-      _voiceAudio.play().catch(function(){});
+      _asrAudio.playbackRate = replaySpeed || 1;
+      _asrAudio.play().catch(function(){});
     } catch(e) {}
   }
 
   function _stopVoice() {
-    if (_voiceAudio && _voiceLoaded) {
-      _voiceAudio.pause();
-      _voiceAudio.currentTime = 0;
+    if (_asrAudio) {
+      _asrAudio.pause();
+      _asrAudio.src = '';
+      _asrAudio = null;
     }
+    _currentAsrId = null;
   }
 
   // ── 开始回放 ──
@@ -4154,16 +4149,16 @@ function esc(s) {
     replayCurrentTime = startTS;
     replayEndTime = endTS;
 
-    // 加载语音（如果选中扇区且速度为1×）
+    // 启动语音轮询（选了扇区才播，没选扇区不播）
     var sectorCode = el.sector ? el.sector.value : '';
-    if (sectorCode && replaySpeed === 1) {
-      _loadVoiceSync(sectorCode);
-    } else if (sectorCode && replaySpeed !== 1) {
-      if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 1×速度时启用语音';
-      _voiceSyncEnabled = false;
+    if (sectorCode) {
+      _voiceSyncEnabled = true;
+      _startAsrPolling();
+      if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCode + ' 等待语音...';
     } else {
-      if (_voiceStatusEl) _voiceStatusEl.textContent = '';
       _voiceSyncEnabled = false;
+      _stopAsrPolling();
+      if (_voiceStatusEl) _voiceStatusEl.textContent = '';
     }
 
     var url = '/api/radar_history?from=' + encodeURIComponent(startTS) + '&to=' + encodeURIComponent(endTS);
@@ -4195,7 +4190,6 @@ function esc(s) {
       updateReplayFrame(replayCurrentTime);
       startPlaybackClock();
       _startVoice();
-      _syncVoicePosition();
     };
     xhr.onerror = xhr.onabort = function() {
       hideReplayLoading();
@@ -4324,6 +4318,7 @@ function esc(s) {
 
   function stopReplay() {
     if (replayTimer) { clearInterval(replayTimer); replayTimer = null; }
+    _stopAsrPolling();
     state = STATE.LIVE;
     historyPoints = []; replayTracks = {};
     replayStartTime = null; replayCurrentTime = null; replayEndTime = null;
@@ -4332,8 +4327,7 @@ function esc(s) {
     el.progress.style.width = '0%';
     _stopVoice();
     // 清除语音状态
-    if (_voiceUrl) { URL.revokeObjectURL(_voiceUrl); _voiceUrl = null; }
-    _voiceAudio = null; _voiceLoaded = false; _voiceSyncEnabled = false;
+    _voiceSyncEnabled = false;
     if (_voiceStatusEl) _voiceStatusEl.textContent = '';
     setTimeout(function() {
       if (typeof window.fetchTracks === 'function') window.fetchTracks();
@@ -4345,8 +4339,9 @@ function esc(s) {
     var wasPlaying = state === STATE.PLAYING;
     if (wasPlaying) pauseReplay();
     replayCurrentTime = replayStartTime;
+    _stopVoice();
     updateReplayFrame(replayCurrentTime);
-    if (wasPlaying) { state = STATE.PLAYING; updateUI(); startPlaybackClock(); _startVoice(); }
+    if (wasPlaying) { state = STATE.PLAYING; updateUI(); startPlaybackClock(); _startVoice(); _asrPlay(); }
   }
 
   function stepBack10s() {
@@ -4356,8 +4351,9 @@ function esc(s) {
     var cur = new Date(replayCurrentTime);
     replayCurrentTime = replayStartTime && new Date(cur.getTime()-10000).toISOString() < replayStartTime
       ? replayStartTime : new Date(cur.getTime()-10000).toISOString();
+    _stopVoice();
     updateReplayFrame(replayCurrentTime);
-    if (wasPlaying) { state = STATE.PLAYING; updateUI(); startPlaybackClock(); _startVoice(); _syncVoicePosition(); }
+    if (wasPlaying) { state = STATE.PLAYING; updateUI(); startPlaybackClock(); _startVoice(); _asrPlay(); }
   }
 
   function stepFwd10s() {
@@ -4367,23 +4363,27 @@ function esc(s) {
     var cur = new Date(replayCurrentTime);
     replayCurrentTime = replayEndTime && new Date(cur.getTime()+10000).toISOString() > replayEndTime
       ? replayEndTime : new Date(cur.getTime()+10000).toISOString();
+    _stopVoice();
     updateReplayFrame(replayCurrentTime);
-    if (wasPlaying) { state = STATE.PLAYING; updateUI(); startPlaybackClock(); _startVoice(); _syncVoicePosition(); }
+    if (wasPlaying) { state = STATE.PLAYING; updateUI(); startPlaybackClock(); _startVoice(); _asrPlay(); }
   }
 
   function skipToLive() { stopReplay(); }
 
-  // ── 扇区切换时重载语音 ──
+  // ── 扇区切换时重置语音 ──
   if (el.sector) {
     el.sector.addEventListener('change', function() {
+      var sectorCode = el.sector.value;
+      _stopVoice();
       if (state !== STATE.LIVE) {
-        _stopVoice();
-        if (_voiceUrl) { URL.revokeObjectURL(_voiceUrl); _voiceUrl = null; }
-        _voiceAudio = null; _voiceLoaded = false;
-        var sectorCode = el.sector.value;
-        if (sectorCode && replaySpeed === 1) {
-          _loadVoiceSync(sectorCode);
-          _startVoice();
+        if (sectorCode) {
+          _voiceSyncEnabled = true;
+          _startAsrPolling();
+          if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCode + ' 等待语音...';
+        } else {
+          _voiceSyncEnabled = false;
+          _stopAsrPolling();
+          if (_voiceStatusEl) _voiceStatusEl.textContent = '';
         }
       } else {
         _voiceSyncEnabled = false;
@@ -4391,19 +4391,11 @@ function esc(s) {
     });
   }
 
-  // ── 速度切换时处理语音 ──
+  // ── 速度切换：同步语音播放速率 ──
   el.speed.addEventListener('change', function() {
     replaySpeed = parseInt(el.speed.value) || 4;
-    if (state !== STATE.LIVE) {
-      var sectorCode = el.sector ? el.sector.value : '';
-      if (sectorCode && replaySpeed === 1 && !_voiceSyncEnabled) {
-        _loadVoiceSync(sectorCode);
-        if (state === STATE.PLAYING) _startVoice();
-      } else if (sectorCode && replaySpeed !== 1 && _voiceSyncEnabled) {
-        _pauseVoice();
-        _voiceSyncEnabled = false;
-        if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + replaySpeed + '×已禁用语音';
-      }
+    if (_asrAudio) {
+      try { _asrAudio.playbackRate = replaySpeed; } catch(e) {}
     }
   });
 
@@ -4418,7 +4410,7 @@ function esc(s) {
       updateUI();
       startPlaybackClock();
       _startVoice();
-      _syncVoicePosition();
+      _asrPlay();
     }
   });
 

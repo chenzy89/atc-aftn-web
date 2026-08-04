@@ -1112,6 +1112,46 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         )
         return jsonify({"total": total, "records": records})
 
+    @app.route("/api/asr/replay")
+    def api_asr_replay():
+        """回放用：按时间 + 扇区查询正在进行的语音记录
+
+        参数：sector=ZGJDTMxx（或短名 HN/HE/...）、date=YYYY-MM-DD、time=HH:MM:SS（UTC）
+        返回该时刻正在通话（或 2 秒内即将开始）的 ASR 记录，含转换后的 wavfilepath
+        """
+        sector = _req_str("sector").upper() if _req_str("sector") else ""
+        date_str = _req_str("date") or ""
+        time_str = _req_str("time") or ""
+        window = request.args.get("window", 5, type=float)
+        if not sector or not date_str or not time_str:
+            return jsonify([])
+        # 扇区代码 → ASR 短名（找不到就原样用）
+        short_name = _SECTOR_CODE_TO_SHORT.get(sector, sector)
+        t_str = f"{date_str} {time_str}"
+        records = db.query_asr_for_replay(
+            short_name, t_str, lookback=window, lookahead=window
+        )
+        return jsonify(records)
+
+    @app.route("/api/asr/wav")
+    def api_asr_wav():
+        """播放 ASR 语音文件：path=file:///mnt/asr-cmdwav/...（挂载目录映射）"""
+        path = request.args.get("path", "")
+        if not path.startswith("file:///mnt/"):
+            return jsonify({"error": "仅允许访问 /mnt/ 下的语音文件"}), 400
+        rel = path[len("file:///mnt/"):]
+        full = Path("/mnt") / rel
+        try:
+            full = full.resolve()
+        except Exception:
+            return jsonify({"error": "路径无效"}), 400
+        # 防路径穿越
+        if not str(full).startswith("/mnt/"):
+            return jsonify({"error": "路径越界"}), 400
+        if not full.is_file():
+            return jsonify({"error": "语音文件不存在"}), 404
+        return send_file(str(full), mimetype="audio/wav", conditional=True)
+
     # ── 禁用浏览器缓存 API 响应 ──────────────────────────
     @app.after_request
     def _no_cache(response):
