@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.31</title>
+<title>ATC综合数据中心 v2.2.32</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -399,28 +399,56 @@ canvas#radarMap {
 }
 .pb-status.replay { color: #58a6ff; }
 .pb-status.live { color: #3fb950; }
-.pb-progress {
+.pb-range {
   flex: 1;
   min-width: 60px;
+  height: 14px;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.pb-range::-webkit-slider-runnable-track {
   height: 6px;
-  background: #21262d;
   border-radius: 3px;
-  overflow: hidden;
+  background: linear-gradient(to right, #58a6ff var(--fill, 0%), #21262d var(--fill, 0%));
 }
-.pb-progress-fill {
-  height: 100%;
+.pb-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
   background: #58a6ff;
-  border-radius: 2px;
-  transition: width .3s;
-  width: 0%;
+  border: 2px solid #0d1117;
+  margin-top: -4px;
+  box-shadow: 0 0 4px rgba(88,166,255,.6);
 }
+.pb-range::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #21262d;
+}
+.pb-range::-moz-range-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: #58a6ff;
+}
+.pb-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #58a6ff;
+  border: 2px solid #0d1117;
+}
+.pb-range:disabled { opacity: .4; cursor: not-allowed; }
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.31</span>
+  <span class="badge">v2.2.32</span>
 </div>
 
 <div class="tabs">
@@ -749,7 +777,7 @@ canvas#radarMap {
       <input type="number" class="pb-speed" id="pbDuration" value="30" min="5" max="240" step="5" title="回放时长（分钟）" style="width:56px;">
       <span class="label">分钟</span>
 
-      <div class="pb-progress" id="pbProgress"><div class="pb-progress-fill" id="pbProgressFill"></div></div>
+      <input type="range" class="pb-range" id="pbProgress" min="0" max="10000" step="1" value="0" title="拖动选择回放时间">
       <span id="pbProgressPct" style="font-size:11px;color:#8b949e;white-space:nowrap;min-width:34px;text-align:right;">0%</span>
       <span class="pb-status live" id="pbStatus">● 实时</span>
     </div>
@@ -3991,7 +4019,7 @@ function esc(s) {
     sec: document.getElementById('pbSec'),
     speed: document.getElementById('pbSpeed'),
     duration: document.getElementById('pbDuration'),
-    progress: document.getElementById('pbProgressFill'),
+    progress: document.getElementById('pbProgress'),
     progressPct: document.getElementById('pbProgressPct'),
   };
 
@@ -4027,6 +4055,7 @@ function esc(s) {
     el.min.disabled = isReplay;
     el.sec.disabled = isReplay;
     el.duration.disabled = isReplay;
+    el.progress.disabled = !isReplay;
   }
 
   function showReplayLoading() { var e=document.getElementById('replay-loading');if(e)e.style.display='flex'; }
@@ -4384,7 +4413,8 @@ function esc(s) {
     var end = new Date(replayEndTime).getTime();
     var cur = new Date(replayCurrentTime).getTime();
     var pct = Math.min(100, Math.max(0, ((cur-start)/(end-start))*100));
-    el.progress.style.width = pct + '%';
+    el.progress.value = Math.round(pct * 100);
+    el.progress.style.setProperty('--fill', pct + '%');
     if (el.progressPct) el.progressPct.textContent = Math.round(pct) + '%';
   }
 
@@ -4404,7 +4434,8 @@ function esc(s) {
     replayStartTime = null; replayCurrentTime = null; replayEndTime = null;
     window._replayActive = false;
     updateUI();
-    el.progress.style.width = '0%';
+    el.progress.value = 0;
+    el.progress.style.setProperty('--fill', '0%');
     if (el.progressPct) el.progressPct.textContent = '0%';
     _stopVoice();
     // 清除语音状态
@@ -4450,6 +4481,37 @@ function esc(s) {
   }
 
   function skipToLive() { stopReplay(); }
+
+  // ── 进度条拖动：快速选择回放时间 ──
+  function seekReplayTo(pct) {
+    if (state === STATE.LIVE || !replayStartTime || !replayEndTime) return;
+    var wasPlaying = state === STATE.PLAYING;
+    if (wasPlaying) pauseReplay();
+    var start = new Date(replayStartTime).getTime();
+    var end = new Date(replayEndTime).getTime();
+    var tMs = start + (end - start) * (Math.min(100, Math.max(0, pct)) / 100);
+    replayCurrentTime = new Date(tMs).toISOString();
+    _stopVoice();
+    updateReplayFrame(replayCurrentTime);
+    updateProgress();
+    if (wasPlaying) { state = STATE.PLAYING; updateUI(); startPlaybackClock(); _startVoice(); _asrPlay(); }
+  }
+
+  el.progress.addEventListener('pointerdown', function() {
+    if (state === STATE.PLAYING) pauseReplay(); // 拖动时暂停，松开后恢复
+  });
+  el.progress.addEventListener('input', function() {
+    var pct = parseFloat(el.progress.value) / 100;
+    if (el.progressPct) el.progressPct.textContent = Math.round(pct) + '%';
+    if (replayStartTime && replayEndTime) {
+      var st = new Date(replayStartTime).getTime();
+      var en = new Date(replayEndTime).getTime();
+      updateTimeLabel(new Date(st + (en - st) * (pct / 100)).toISOString());
+    }
+  });
+  el.progress.addEventListener('change', function() {
+    seekReplayTo(parseFloat(el.progress.value) / 100);
+  });
 
   // ── 地图“扇区”弹窗勾选变化 → 同步回放语音（由 toggleWatchSector 调用） ──
   window._syncReplayVoice = function() {
