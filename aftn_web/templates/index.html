@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.27</title>
+<title>ATC综合数据中心 v2.2.28</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -420,7 +420,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.27</span>
+  <span class="badge">v2.2.28</span>
 </div>
 
 <div class="tabs">
@@ -704,7 +704,7 @@ canvas#radarMap {
   <div class="map-layers-overlay" id="watchSectorOverlay">
     <div class="map-layers-dialog" style="min-width:360px;">
       <h3>关注扇区</h3>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">勾选后仅同时满足机场和扇区的航班标牌为绿色</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">勾选后仅同时满足机场和扇区的航班标牌为绿色；回放时播放勾选扇区的通话语音（可多选）</div>
       <div id="watchSectorList" style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px 12px;"></div>
       <div class="map-layers-close">
         <button onclick="closeWatchSectorDialog()">关闭</button>
@@ -723,18 +723,6 @@ canvas#radarMap {
 
       <span class="pb-sep"></span>
 
-      <label class="label">扇区</label>
-      <select id="pbSector" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;outline:none;cursor:pointer;">
-        <option value="">— 无 —</option>
-        <option value="ZGJDTM01">TM01 HN (CH38)</option>
-        <option value="ZGJDTM02">TM02 HE (CH42)</option>
-        <option value="ZGJDTM03">TM03 ARW (CH50)</option>
-        <option value="ZGJDTM04">TM04 AS (CH264)</option>
-        <option value="ZGJDTM05">TM05 AD (CH46)</option>
-        <option value="ZGJDTM06">TM06 ASL (CH32)</option>
-        <option value="ZGJDTM07">TM07 ARE/AA (CH54)</option>
-      </select>
-
       <span id="pbVoiceStatus" style="font-size:11px;color:var(--text-muted);white-space:nowrap;"></span>
 
       <span class="pb-sep"></span>
@@ -749,6 +737,7 @@ canvas#radarMap {
       <span class="label" style="margin-left:0;">速度</span>
       <select class="pb-speed" id="pbSpeed">
         <option value="1">1×</option>
+        <option value="2">2×</option>
         <option value="4" selected>4×</option>
         <option value="8">8×</option>
         <option value="12">12×</option>
@@ -3874,6 +3863,8 @@ function esc(s) {
       _WATCHED_SECTORS.add(code);
     }
     drawMap();
+    // 回放中勾选扇区变化 → 同步语音播放
+    if (typeof window._syncReplayVoice === 'function') window._syncReplayVoice();
   }
 
   // 关注扇区弹窗点击遮罩关闭
@@ -3969,12 +3960,15 @@ function esc(s) {
   var _SEC_CH = {'ZGJDTM01':38,'ZGJDTM02':42,'ZGJDTM03':50,'ZGJDTM04':264,'ZGJDTM05':46,'ZGJDTM06':32,'ZGJDTM07':54};
 
   // 语音同步（ASR 识别文件，按时间+扇区索引）
-  var _asrAudio = null;          // Audio 元素（当前 ASR 语音）
-  var _currentAsrId = null;      // 当前播放的 ASR 记录 id
+  var _asrAudios = {};           // sector_code → Audio 元素（每个勾选扇区一个）
+  var _asrAudioId = {};          // sector_code → 当前播放的 ASR 记录 id
   var _asrPollTimer = null;      // 轮询定时器
   var _asrPolling = false;       // 是否正在轮询（防重入）
   var _voiceSyncEnabled = false; // 是否启用语音
   var _voiceStatusEl = document.getElementById('pbVoiceStatus');
+
+  // 扇区代码 → 显示名
+  var _SEC_DISPLAY = {'ZGJDTM01':'TM01 HN','ZGJDTM02':'TM02 HE','ZGJDTM03':'TM03 ARW','ZGJDTM04':'TM04 AS','ZGJDTM05':'TM05 AD','ZGJDTM06':'TM06 ASL','ZGJDTM07':'TM07 ARE/AA'};
 
   // DOM refs
   var el = {
@@ -3991,7 +3985,6 @@ function esc(s) {
     sec: document.getElementById('pbSec'),
     speed: document.getElementById('pbSpeed'),
     progress: document.getElementById('pbProgressFill'),
-    sector: document.getElementById('pbSector'),
   };
 
   // ── 初始化时间选择器 ──
@@ -4040,9 +4033,14 @@ function esc(s) {
   }
 
   function _asrPlay() {
-    // 按当前回放时间 + 选中扇区查询正在进行的语音并播放
-    var sectorCode = el.sector ? el.sector.value : '';
-    if (!sectorCode) return; // 没选扇区 → 不播放语音
+    // 按当前回放时间 + 地图“扇区”弹窗勾选的扇区（可多选）查询语音并播放
+    var sectorCodes = Array.from(_WATCHED_SECTORS || []);
+    if (!sectorCodes.length) {
+      // 未勾选任何扇区 → 不播放语音
+      _stopVoice();
+      if (_voiceStatusEl) _voiceStatusEl.textContent = '';
+      return;
+    }
     if (!replayCurrentTime) return;
     if (_asrPolling) return;
     _asrPolling = true;
@@ -4050,7 +4048,7 @@ function esc(s) {
     var t = _asrPlaybackTimeStr();
     var dateStr = t.split(' ')[0];
     var timeStr = t.split(' ')[1] || '';
-    var url = '/api/asr/replay?sector=' + encodeURIComponent(sectorCode)
+    var url = '/api/asr/replay?sector=' + encodeURIComponent(sectorCodes.join(','))
       + '&date=' + encodeURIComponent(dateStr)
       + '&time=' + encodeURIComponent(timeStr) + '&window=6';
 
@@ -4058,34 +4056,43 @@ function esc(s) {
       .then(function(r) { return r.json(); })
       .then(function(records) {
         if (state !== STATE.PLAYING) return;
-        var rec = (records && records.length) ? records[0] : null;
-        if (rec && rec.wavfilepath) {
-          if (rec.id === _currentAsrId && _asrAudio && !_asrAudio.paused) {
-            // 正在播同一条，无需切换
-            return;
-          }
-          _stopVoice();
-          _currentAsrId = rec.id;
-          var audio = new Audio('/api/asr/wav?path=' + encodeURIComponent(rec.wavfilepath));
-          audio.preload = 'auto';
-          audio.playbackRate = replaySpeed || 1;
-          audio.onended = function() {
-            if (_currentAsrId === rec.id) _currentAsrId = null;
-          };
-          audio.play().catch(function(){});
-          _asrAudio = audio;
-          if (_voiceStatusEl) {
+        var bySector = {};
+        (records || []).forEach(function(rec) {
+          var sc = rec.sector_code || '';
+          if (!bySector[sc]) bySector[sc] = [];
+          bySector[sc].push(rec);
+        });
+        var playingInfo = [];
+        sectorCodes.forEach(function(sc) {
+          var recs = bySector[sc] || [];
+          var rec = recs.length ? recs[0] : null; // 该扇区最早开始的通话
+          if (rec && rec.wavfilepath) {
+            var au = _asrAudios[sc];
+            if (!(au && rec.id === _asrAudioId[sc] && !au.paused)) {
+              // 新通话或已停止 → 重新播放该扇区语音
+              _stopSectorVoice(sc);
+              _asrAudioId[sc] = rec.id;
+              au = new Audio('/api/asr/wav?path=' + encodeURIComponent(rec.wavfilepath));
+              au.preload = 'auto';
+              au.playbackRate = replaySpeed || 1;
+              var sid = sc;
+              au.onended = function() {
+                if (_asrAudioId[sid] === rec.id) _asrAudioId[sid] = null;
+              };
+              au.play().catch(function(){});
+              _asrAudios[sc] = au;
+            }
             var cs = rec.callsign || '';
-            var txt = (rec.processedCommand || '').slice(0, 30);
-            _voiceStatusEl.textContent = '🎧 ' + (cs ? cs + ' ' : '') + txt;
+            playingInfo.push((_SEC_DISPLAY[sc] || sc) + (cs ? ' ' + cs : ''));
+          } else {
+            // 该扇区当前无语音
+            _stopSectorVoice(sc);
           }
-        } else {
-          // 当前时刻无语音
-          if (_asrAudio && !_asrAudio.paused) { _asrAudio.pause(); }
-          if (_currentAsrId !== null) {
-            _currentAsrId = null;
-            if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCode + ' 等待语音...';
-          }
+        });
+        if (_voiceStatusEl) {
+          _voiceStatusEl.textContent = playingInfo.length
+            ? '🎧 ' + playingInfo.join(' | ')
+            : '🎧 ' + sectorCodes.map(function(sc){return _SEC_DISPLAY[sc]||sc;}).join(',') + ' 等待语音...';
         }
       })
       .catch(function() {})
@@ -4103,24 +4110,36 @@ function esc(s) {
   }
 
   function _pauseVoice() {
-    if (_asrAudio) { _asrAudio.pause(); }
+    Object.keys(_asrAudios).forEach(function(sc) {
+      var au = _asrAudios[sc];
+      if (au) au.pause();
+    });
   }
 
   function _startVoice() {
-    if (!_voiceSyncEnabled || !_asrAudio) return;
-    try {
-      _asrAudio.playbackRate = replaySpeed || 1;
-      _asrAudio.play().catch(function(){});
-    } catch(e) {}
+    if (!_voiceSyncEnabled) return;
+    Object.keys(_asrAudios).forEach(function(sc) {
+      var au = _asrAudios[sc];
+      if (!au) return;
+      try {
+        au.playbackRate = replaySpeed || 1;
+        au.play().catch(function(){});
+      } catch(e) {}
+    });
+  }
+
+  function _stopSectorVoice(sc) {
+    var au = _asrAudios[sc];
+    if (au) {
+      au.pause();
+      au.src = '';
+    }
+    delete _asrAudios[sc];
+    delete _asrAudioId[sc];
   }
 
   function _stopVoice() {
-    if (_asrAudio) {
-      _asrAudio.pause();
-      _asrAudio.src = '';
-      _asrAudio = null;
-    }
-    _currentAsrId = null;
+    Object.keys(_asrAudios).forEach(_stopSectorVoice);
   }
 
   // ── 开始回放 ──
@@ -4149,12 +4168,12 @@ function esc(s) {
     replayCurrentTime = startTS;
     replayEndTime = endTS;
 
-    // 启动语音轮询（选了扇区才播，没选扇区不播）
-    var sectorCode = el.sector ? el.sector.value : '';
-    if (sectorCode) {
+    // 启动语音轮询（地图“扇区”弹窗勾选了扇区才播，可多选）
+    var sectorCodes = Array.from(_WATCHED_SECTORS || []);
+    if (sectorCodes.length) {
       _voiceSyncEnabled = true;
       _startAsrPolling();
-      if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCode + ' 等待语音...';
+      if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCodes.map(function(sc){return _SEC_DISPLAY[sc]||sc;}).join(',') + ' 等待语音...';
     } else {
       _voiceSyncEnabled = false;
       _stopAsrPolling();
@@ -4370,33 +4389,35 @@ function esc(s) {
 
   function skipToLive() { stopReplay(); }
 
-  // ── 扇区切换时重置语音 ──
-  if (el.sector) {
-    el.sector.addEventListener('change', function() {
-      var sectorCode = el.sector.value;
+  // ── 地图“扇区”弹窗勾选变化 → 同步回放语音（由 toggleWatchSector 调用） ──
+  window._syncReplayVoice = function() {
+    if (state === STATE.LIVE) {
+      _voiceSyncEnabled = false;
+      _stopAsrPolling();
+      return;
+    }
+    var sectorCodes = Array.from(_WATCHED_SECTORS || []);
+    if (sectorCodes.length) {
+      _voiceSyncEnabled = true;
+      _startAsrPolling();
+      if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCodes.map(function(sc){return _SEC_DISPLAY[sc]||sc;}).join(',') + ' 等待语音...';
+    } else {
+      _voiceSyncEnabled = false;
+      _stopAsrPolling();
       _stopVoice();
-      if (state !== STATE.LIVE) {
-        if (sectorCode) {
-          _voiceSyncEnabled = true;
-          _startAsrPolling();
-          if (_voiceStatusEl) _voiceStatusEl.textContent = '🎧 ' + sectorCode + ' 等待语音...';
-        } else {
-          _voiceSyncEnabled = false;
-          _stopAsrPolling();
-          if (_voiceStatusEl) _voiceStatusEl.textContent = '';
-        }
-      } else {
-        _voiceSyncEnabled = false;
-      }
-    });
-  }
+      if (_voiceStatusEl) _voiceStatusEl.textContent = '';
+    }
+  };
 
   // ── 速度切换：同步语音播放速率 ──
   el.speed.addEventListener('change', function() {
     replaySpeed = parseInt(el.speed.value) || 4;
-    if (_asrAudio) {
-      try { _asrAudio.playbackRate = replaySpeed; } catch(e) {}
-    }
+    Object.keys(_asrAudios).forEach(function(sc) {
+      var au = _asrAudios[sc];
+      if (au) {
+        try { au.playbackRate = replaySpeed; } catch(e) {}
+      }
+    });
   });
 
   // ── 绑定事件 ──

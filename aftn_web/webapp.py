@@ -1114,24 +1114,35 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
 
     @app.route("/api/asr/replay")
     def api_asr_replay():
-        """回放用：按时间 + 扇区查询正在进行的语音记录
+        """回放用：按时间 + 扇区列表查询正在进行的语音记录
 
-        参数：sector=ZGJDTMxx（或短名 HN/HE/...）、date=YYYY-MM-DD、time=HH:MM:SS（UTC）
-        返回该时刻正在通话（或 2 秒内即将开始）的 ASR 记录，含转换后的 wavfilepath
+        参数：sector=ZGJDTM01,ZGJDTM03（逗号分隔，可多选；兼容单个短名 HN/HE/...）、
+              date=YYYY-MM-DD、time=HH:MM:SS（UTC）
+        返回该时刻正在通话（或 2 秒内即将开始）的 ASR 记录，含转换后的 wavfilepath；
+        每条记录附带 sector_code 字段标明所属扇区代码
         """
-        sector = _req_str("sector").upper() if _req_str("sector") else ""
+        raw = _req_str("sector") or ""
+        sectors = [s.strip().upper() for s in raw.split(",") if s.strip()]
         date_str = _req_str("date") or ""
         time_str = _req_str("time") or ""
         window = request.args.get("window", 5, type=float)
-        if not sector or not date_str or not time_str:
+        if not sectors or not date_str or not time_str:
             return jsonify([])
-        # 扇区代码 → ASR 短名（找不到就原样用）
-        short_name = _SECTOR_CODE_TO_SHORT.get(sector, sector)
         t_str = f"{date_str} {time_str}"
-        records = db.query_asr_for_replay(
-            short_name, t_str, lookback=window, lookahead=window
-        )
-        return jsonify(records)
+        result = []
+        for code in sectors:
+            # 扇区代码 → ASR 短名（找不到就原样用）
+            short_name = _SECTOR_CODE_TO_SHORT.get(code, code)
+            records = db.query_asr_for_replay(
+                short_name, t_str, lookback=window, lookahead=window
+            )
+            for d in records:
+                d = dict(d)
+                d["sector_code"] = code
+                result.append(d)
+        # 按开始时间排序（wavbegintime 为空时用 received_at 兜底）
+        result.sort(key=lambda r: (r.get("wavbegintime") or r.get("received_at") or ""))
+        return jsonify(result)
 
     @app.route("/api/asr/wav")
     def api_asr_wav():
