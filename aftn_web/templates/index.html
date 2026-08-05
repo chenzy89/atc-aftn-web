@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.29</title>
+<title>ATC综合数据中心 v2.2.30</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -420,7 +420,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.29</span>
+  <span class="badge">v2.2.30</span>
 </div>
 
 <div class="tabs">
@@ -3962,6 +3962,7 @@ function esc(s) {
   // 语音同步（ASR 识别文件，按时间+扇区索引）
   var _asrAudios = {};           // sector_code → Audio 元素（每个勾选扇区一个）
   var _asrAudioId = {};          // sector_code → 当前播放的 ASR 记录 id
+  var _asrPending = {};          // sector_code → {id, btMs} 已预载未到开始时刻的通话
   var _asrPollTimer = null;      // 轮询定时器
   var _asrPolling = false;       // 是否正在轮询（防重入）
   var _voiceSyncEnabled = false; // 是否启用语音
@@ -4042,7 +4043,8 @@ function esc(s) {
   }
 
   // 播放某扇区的一条通话：从头/从偏移开始，播完自然结束，不重启不掐断
-  function _playSectorVoice(sc, rec, offsetSec) {
+  // 未到开始时刻的通话只预载不播放，等回放时钟走到 bt 再由 _checkPendingVoiceStart 开播
+  function _playSectorVoice(sc, rec, offsetSec, btMs) {
     _stopSectorVoice(sc);
     _asrAudioId[sc] = rec.id;
     var audio = new Audio('/api/asr/wav?path=' + encodeURIComponent(rec.wavfilepath));
@@ -4051,6 +4053,12 @@ function esc(s) {
     var start = function() {
       if (_asrAudioId[sid] !== rec.id) return; // 已被新通话替换
       try {
+        if (btMs !== null && btMs > new Date(replayCurrentTime).getTime()) {
+          // 还没到开始时刻 → 只预载，挂起等待回放时钟
+          _asrPending[sid] = {id: rec.id, btMs: btMs};
+          return;
+        }
+        if (_asrPending[sid] && _asrPending[sid].id === rec.id) delete _asrPending[sid];
         if (offsetSec > 0 && audio.currentTime < offsetSec) audio.currentTime = offsetSec;
         audio.playbackRate = replaySpeed || 1;
         audio.play().catch(function(){});
@@ -4059,10 +4067,31 @@ function esc(s) {
     // 本地 wav 通常立即可用；元数据就绪后再校正一次偏移
     audio.addEventListener('loadedmetadata', start);
     audio.addEventListener('canplay', function() {
-      if (_asrAudioId[sid] === rec.id && audio.paused) start();
+      if (_asrAudioId[sid] === rec.id && audio.paused && !_asrPending[sid]) start();
     });
     start();
     _asrAudios[sc] = audio;
+  }
+
+  // 回放时钟推进时，把已到开始时刻的预载通话开播（精确同步，无提前播放）
+  function _checkPendingVoiceStart() {
+    if (!replayCurrentTime) return;
+    var tMs = new Date(replayCurrentTime).getTime();
+    Object.keys(_asrPending).forEach(function(sc) {
+      var p = _asrPending[sc];
+      if (!p) return;
+      if (tMs >= p.btMs && _asrAudioId[sc] === p.id) {
+        delete _asrPending[sc];
+        var au = _asrAudios[sc];
+        if (!au) return;
+        try {
+          var off = (tMs - p.btMs) / 1000;
+          if (off > 0 && au.currentTime < off) au.currentTime = off;
+          au.playbackRate = replaySpeed || 1;
+          au.play().catch(function(){});
+        } catch(e) {}
+      }
+    });
   }
 
   function _asrPlay() {
@@ -4111,13 +4140,16 @@ function esc(s) {
             if (!au || _asrAudioId[sc] !== rec.id) {
               // 新通话 → 播放；已进行到一半的从当前进度开始（不重复起始段）
               var offsetSec = (btMs !== null && btMs > tMs) ? 0 : Math.max(0, (tMs - (btMs || tMs)) / 1000);
-              _playSectorVoice(sc, rec, offsetSec);
+              _playSectorVoice(sc, rec, offsetSec, btMs);
             }
             var cs = rec.callsign || '';
             playingInfo.push((_SEC_DISPLAY[sc] || sc) + (cs ? ' ' + cs : ''));
           } else {
             // 该扇区当前无通话：不打断正在播放的语音，让它自然播完；已结束的清理掉
-            if (au && au.ended) _stopSectorVoice(sc);
+            if (au) {
+              if (au.ended) _stopSectorVoice(sc);
+              else if (_asrPending[sc]) _stopSectorVoice(sc); // 预载目标已消失 → 取消
+            }
           }
         });
         if (_voiceStatusEl) {
@@ -4150,6 +4182,8 @@ function esc(s) {
   function _startVoice() {
     if (!_voiceSyncEnabled) return;
     Object.keys(_asrAudios).forEach(function(sc) {
+      var p = _asrPending[sc];
+      if (p && _asrAudioId[sc] === p.id) return; // 未到开始时刻，等回放时钟
       var au = _asrAudios[sc];
       if (!au) return;
       try {
@@ -4167,6 +4201,7 @@ function esc(s) {
     }
     delete _asrAudios[sc];
     delete _asrAudioId[sc];
+    delete _asrPending[sc];
   }
 
   function _stopVoice() {
@@ -4271,6 +4306,7 @@ function esc(s) {
 
     replayCurrentTime = nextTS;
     updateReplayFrame(nextTS);
+    _checkPendingVoiceStart();
 
     var remaining = new Date(replayEndTime).getTime() - next.getTime();
     if (remaining < 10000) loadMoreHistory();
