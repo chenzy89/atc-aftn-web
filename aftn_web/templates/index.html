@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.28</title>
+<title>ATC综合数据中心 v2.2.29</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -420,7 +420,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.28</span>
+  <span class="badge">v2.2.29</span>
 </div>
 
 <div class="tabs">
@@ -4032,6 +4032,39 @@ function esc(s) {
       + ' ' + pad2(d.getUTCHours())+':'+pad2(d.getUTCMinutes())+':'+pad2(d.getUTCSeconds());
   }
 
+  // 解析 'YYYY-MM-DD HH:MM:SS.mmm'（UTC）→ 毫秒
+  function _parseTimeMs(s) {
+    if (!s) return null;
+    var m = String(s).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/);
+    if (!m) return null;
+    var ms = m[7] ? parseInt(m[7].slice(0,3).padEnd(3,'0'), 10) : 0;
+    return Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6], ms);
+  }
+
+  // 播放某扇区的一条通话：从头/从偏移开始，播完自然结束，不重启不掐断
+  function _playSectorVoice(sc, rec, offsetSec) {
+    _stopSectorVoice(sc);
+    _asrAudioId[sc] = rec.id;
+    var audio = new Audio('/api/asr/wav?path=' + encodeURIComponent(rec.wavfilepath));
+    audio.preload = 'auto';
+    var sid = sc;
+    var start = function() {
+      if (_asrAudioId[sid] !== rec.id) return; // 已被新通话替换
+      try {
+        if (offsetSec > 0 && audio.currentTime < offsetSec) audio.currentTime = offsetSec;
+        audio.playbackRate = replaySpeed || 1;
+        audio.play().catch(function(){});
+      } catch(e) {}
+    };
+    // 本地 wav 通常立即可用；元数据就绪后再校正一次偏移
+    audio.addEventListener('loadedmetadata', start);
+    audio.addEventListener('canplay', function() {
+      if (_asrAudioId[sid] === rec.id && audio.paused) start();
+    });
+    start();
+    _asrAudios[sc] = audio;
+  }
+
   function _asrPlay() {
     // 按当前回放时间 + 地图“扇区”弹窗勾选的扇区（可多选）查询语音并播放
     var sectorCodes = Array.from(_WATCHED_SECTORS || []);
@@ -4046,6 +4079,7 @@ function esc(s) {
     _asrPolling = true;
 
     var t = _asrPlaybackTimeStr();
+    var tMs = new Date(replayCurrentTime).getTime();
     var dateStr = t.split(' ')[0];
     var timeStr = t.split(' ')[1] || '';
     var url = '/api/asr/replay?sector=' + encodeURIComponent(sectorCodes.join(','))
@@ -4065,28 +4099,25 @@ function esc(s) {
         var playingInfo = [];
         sectorCodes.forEach(function(sc) {
           var recs = bySector[sc] || [];
-          var rec = recs.length ? recs[0] : null; // 该扇区最早开始的通话
+          // 取该扇区最早开始的通话：已开始的优先；未开始但 2 秒内即将开始的预滚播放（不漏开头）
+          var rec = null, btMs = null;
+          for (var i = 0; i < recs.length; i++) {
+            var b = _parseTimeMs(recs[i].wavbegintime || recs[i].received_at);
+            if (b === null) continue;
+            if (b <= tMs + 2000) { rec = recs[i]; btMs = b; break; }
+          }
+          var au = _asrAudios[sc];
           if (rec && rec.wavfilepath) {
-            var au = _asrAudios[sc];
-            if (!(au && rec.id === _asrAudioId[sc] && !au.paused)) {
-              // 新通话或已停止 → 重新播放该扇区语音
-              _stopSectorVoice(sc);
-              _asrAudioId[sc] = rec.id;
-              au = new Audio('/api/asr/wav?path=' + encodeURIComponent(rec.wavfilepath));
-              au.preload = 'auto';
-              au.playbackRate = replaySpeed || 1;
-              var sid = sc;
-              au.onended = function() {
-                if (_asrAudioId[sid] === rec.id) _asrAudioId[sid] = null;
-              };
-              au.play().catch(function(){});
-              _asrAudios[sc] = au;
+            if (!au || _asrAudioId[sc] !== rec.id) {
+              // 新通话 → 播放；已进行到一半的从当前进度开始（不重复起始段）
+              var offsetSec = (btMs !== null && btMs > tMs) ? 0 : Math.max(0, (tMs - (btMs || tMs)) / 1000);
+              _playSectorVoice(sc, rec, offsetSec);
             }
             var cs = rec.callsign || '';
             playingInfo.push((_SEC_DISPLAY[sc] || sc) + (cs ? ' ' + cs : ''));
           } else {
-            // 该扇区当前无语音
-            _stopSectorVoice(sc);
+            // 该扇区当前无通话：不打断正在播放的语音，让它自然播完；已结束的清理掉
+            if (au && au.ended) _stopSectorVoice(sc);
           }
         });
         if (_voiceStatusEl) {
