@@ -14,13 +14,13 @@
 - 已存在的记录会更新架次、保留已有跑道（UPSERT 语义）
 """
 
+from __future__ import annotations
+
 import gzip
 import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-
-from __future__ import annotations
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -89,8 +89,9 @@ def main() -> int:
             i = line.find('"' + key + '":"')
             if i < 0:
                 return ""
-            j = line.find('"', i + len(key) + 3)
-            return line[i + len(key) + 3:j] if j > 0 else ""
+            # 内容从 '"key":"' 之后开始：长度 = len(key) + 4
+            j = line.find('"', i + len(key) + 4)
+            return line[i + len(key) + 4:j] if j > 0 else ""
         return _get("ts"), _get("ap"), _get("ad"), _get("rw")
 
     for day in range((d_to - d_from).days + 1):
@@ -107,6 +108,9 @@ def main() -> int:
                     continue
                 ts, ap, ad, rw = _fields(line)
                 if not ts or not rw:
+                    continue
+                rw = rw.replace("\\u0000", "").replace("\x00", "").strip()  # 清洗 NUL 转义/非打印字符
+                if not rw:
                     continue
                 kept += 1
                 try:

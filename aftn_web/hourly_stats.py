@@ -33,6 +33,7 @@ class HourlyStatsTracker:
     def record_radar(self, parsed: dict[str, Any], received_at: datetime) -> None:
         """从 CAT062 雷达记录中收集跑道使用情况"""
         rw = (parsed.get("runway") or "").strip()
+        rw = rw.replace("\\u0000", "").replace("\x00", "").strip()  # 清洗 NUL 转义/非打印字符
         if not rw:
             return
         adep = (parsed.get("adep") or "").strip().upper()
