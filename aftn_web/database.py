@@ -240,6 +240,30 @@ class Database:
                 ON flight_tracks(adest);
             CREATE INDEX IF NOT EXISTS idx_ft_dof_callsign
                 ON flight_tracks(dof, callsign);
+
+            CREATE TABLE IF NOT EXISTS hourly_traffic (
+                hour TEXT PRIMARY KEY,
+                tm01 INTEGER NOT NULL DEFAULT 0,
+                tm02 INTEGER NOT NULL DEFAULT 0,
+                tm03 INTEGER NOT NULL DEFAULT 0,
+                tm04 INTEGER NOT NULL DEFAULT 0,
+                tm05 INTEGER NOT NULL DEFAULT 0,
+                tm06 INTEGER NOT NULL DEFAULT 0,
+                tm07 INTEGER NOT NULL DEFAULT 0,
+                zgsz_dep INTEGER NOT NULL DEFAULT 0,
+                zgsz_arr INTEGER NOT NULL DEFAULT 0,
+                zgsz_runway TEXT NOT NULL DEFAULT '',
+                zgsd_dep INTEGER NOT NULL DEFAULT 0,
+                zgsd_arr INTEGER NOT NULL DEFAULT 0,
+                zgsd_runway TEXT NOT NULL DEFAULT '',
+                vmmc_dep INTEGER NOT NULL DEFAULT 0,
+                vmmc_arr INTEGER NOT NULL DEFAULT 0,
+                vmmc_runway TEXT NOT NULL DEFAULT '',
+                zgnt INTEGER NOT NULL DEFAULT 0,
+                zguh INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_ht_hour
+                ON hourly_traffic(hour);
         """)
         conn.commit()
 
@@ -1580,6 +1604,130 @@ class Database:
             if 0 <= s < 144:
                 result[s] = r["count"]
         return result
+
+    # ── 时段流量统计（hourly_traffic 表） ─────────────────────────
+
+    def count_sector_callsigns_hour(self, terminal_code: str, date_str: str,
+                                    slot_a: int, slot_b: int) -> int:
+        """统计某小时（6 个 10 分钟 slot）内出现在该扇区的去重航班数"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT callsign) n FROM sector_callsigns_10min "
+            "WHERE terminal_code=? AND date=? AND slot>=? AND slot<=?",
+            (terminal_code, date_str, slot_a, slot_b),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_flights_airport_hour(self, airport: str, mode: str,
+                                   start: datetime, end: datetime) -> int:
+        """统计某小时内机场进出港去重航班数
+
+        mode: 'dep' 出港（atd 落在时段内）| 'arr' 进港（ata 落在时段内）
+              'both' 进出合并（ZGNT/ZGUH 用）
+        """
+        conn = self._get_conn()
+        s = start.strftime("%Y-%m-%d %H:%M:%S")
+        e = end.strftime("%Y-%m-%d %H:%M:%S")
+        if mode == "dep":
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT callsign) n FROM flight_plans "
+                "WHERE adep=? AND atd>=? AND atd<?",
+                (airport, s, e),
+            ).fetchone()
+        elif mode == "arr":
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT callsign) n FROM flight_plans "
+                "WHERE adest=? AND ata>=? AND ata<?",
+                (airport, s, e),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT callsign) n FROM flight_plans "
+                "WHERE (adep=? OR adest=?) AND ((atd>=? AND atd<?) OR (ata>=? AND ata<?))",
+                (airport, airport, s, e, s, e),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def save_hourly_traffic(self, stats: dict) -> None:
+        """保存一条时段流量记录（按小时 UPSERT，保留已有跑道）"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT INTO hourly_traffic
+               (hour, tm01, tm02, tm03, tm04, tm05, tm06, tm07,
+                zgsz_dep, zgsz_arr, zgsz_runway,
+                zgsd_dep, zgsd_arr, zgsd_runway,
+                vmmc_dep, vmmc_arr, vmmc_runway, zgnt, zguh)
+               VALUES (?,?,?,?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?, ?,?)
+               ON CONFLICT(hour) DO UPDATE SET
+                 tm01=excluded.tm01, tm02=excluded.tm02, tm03=excluded.tm03,
+                 tm04=excluded.tm04, tm05=excluded.tm05, tm06=excluded.tm06,
+                 tm07=excluded.tm07,
+                 zgsz_dep=excluded.zgsz_dep, zgsz_arr=excluded.zgsz_arr,
+                 zgsd_dep=excluded.zgsd_dep, zgsd_arr=excluded.zgsd_arr,
+                 vmmc_dep=excluded.vmmc_dep, vmmc_arr=excluded.vmmc_arr,
+                 zgnt=excluded.zgnt, zguh=excluded.zguh,
+                 zgsz_runway=CASE WHEN excluded.zgsz_runway='' THEN hourly_traffic.zgsz_runway ELSE excluded.zgsz_runway END,
+                 zgsd_runway=CASE WHEN excluded.zgsd_runway='' THEN hourly_traffic.zgsd_runway ELSE excluded.zgsd_runway END,
+                 vmmc_runway=CASE WHEN excluded.vmmc_runway='' THEN hourly_traffic.vmmc_runway ELSE excluded.vmmc_runway END
+            """,
+            (stats["hour"], stats["tm01"], stats["tm02"], stats["tm03"],
+             stats["tm04"], stats["tm05"], stats["tm06"], stats["tm07"],
+             stats["zgsz_dep"], stats["zgsz_arr"], stats.get("zgsz_runway", ""),
+             stats["zgsd_dep"], stats["zgsd_arr"], stats.get("zgsd_runway", ""),
+             stats["vmmc_dep"], stats["vmmc_arr"], stats.get("vmmc_runway", ""),
+             stats["zgnt"], stats["zguh"]),
+        )
+        conn.commit()
+
+    def query_hourly_traffic(self, month: str) -> list[dict]:
+        """查询某月（YYYY-MM）的时段流量记录，按时段升序"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM hourly_traffic WHERE hour LIKE ? ORDER BY hour",
+            (month + "-%",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def agg_voice_duration(self, channel: int, mode: str,
+                           period: str) -> list[dict]:
+        """聚合语音通话时长：month → 按天；year → 按月
+
+        返回 [{key, seconds}]，key 为 'YYYY-MM-DD' 或 'YYYY-MM'
+        """
+        conn = self._get_conn()
+        if mode == "month":
+            sql = ("SELECT date key, ROUND(SUM(duration),1) seconds "
+                   "FROM voice_duration WHERE channel=? AND date LIKE ? "
+                   "GROUP BY date ORDER BY date")
+        else:
+            sql = ("SELECT substr(date,1,7) key, ROUND(SUM(duration),1) seconds "
+                   "FROM voice_duration WHERE channel=? AND date LIKE ? "
+                   "GROUP BY substr(date,1,7) ORDER BY key")
+        rows = conn.execute(sql, (channel, period + "%")).fetchall()
+        return [{"key": r["key"], "seconds": r["seconds"]} for r in rows]
+
+    def agg_sector_traffic(self, terminal_codes: list[str], mode: str,
+                           period: str) -> list[dict]:
+        """聚合扇区架次（含静态扇区合并，子扇区 callsign 并入父扇区去重）
+
+        mode: 'month' → 按天；'year' → 按月
+        注意：此聚合使用静态合并规则（不区分 slot 语音活跃度），
+        与日视图的 slot 级合并口径略有差异，月度/年度趋势展示足够。
+        """
+        conn = self._get_conn()
+        placeholders = ",".join(["?"] * len(terminal_codes))
+        if mode == "month":
+            sql = (f"SELECT date key, COUNT(DISTINCT callsign) n "
+                   f"FROM sector_callsigns_10min "
+                   f"WHERE terminal_code IN ({placeholders}) AND date LIKE ? "
+                   f"GROUP BY date ORDER BY date")
+        else:
+            sql = (f"SELECT substr(date,1,7) key, COUNT(DISTINCT callsign) n "
+                   f"FROM sector_callsigns_10min "
+                   f"WHERE terminal_code IN ({placeholders}) AND date LIKE ? "
+                   f"GROUP BY substr(date,1,7) ORDER BY key")
+        rows = conn.execute(sql, terminal_codes + [period + "%"]).fetchall()
+        return [{"key": r["key"], "n": r["n"]} for r in rows]
 
     def _get_codes_to_merge(
         self, terminal_code: str, slot: int,

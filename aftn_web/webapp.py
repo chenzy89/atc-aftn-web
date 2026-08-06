@@ -821,6 +821,47 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         "ZGJDTM07": "ARE",
     }
 
+    # ══════════════════════════════════════════════════════════
+    # 时段流量（hourly_traffic）
+    # ══════════════════════════════════════════════════════════
+    @app.route("/api/hourly_traffic")
+    def api_hourly_traffic():
+        """查询某月（YYYY-MM）的时段流量记录"""
+        month = _req_str("month") or datetime.utcnow().strftime("%Y-%m")
+        if len(month) != 7 or month[4] != "-" or not month[:4].isdigit() or not month[5:].isdigit():
+            return jsonify({"error": "月份格式应为 YYYY-MM"}), 400
+        rows = db.query_hourly_traffic(month)
+        return jsonify({"month": month, "rows": rows})
+
+    @app.route("/api/hourly_traffic/export", methods=["POST"])
+    def api_hourly_traffic_export():
+        """导出某月时段流量为 xlsx"""
+        body = request.get_json() or {}
+        month = str(body.get("month", ""))
+        if len(month) != 7 or month[4] != "-":
+            return jsonify({"error": "月份格式应为 YYYY-MM"}), 400
+        rows = db.query_hourly_traffic(month)
+        header = ["时段", "TM01", "TM02", "TM03", "TM04", "TM05", "TM06", "TM07",
+                  "ZGSZ出港", "ZGSZ进港", "ZGSZ使用跑道",
+                  "ZGSD出港", "ZGSD进港", "ZGSD使用跑道",
+                  "VMMC出港", "VMMC进港", "VMMC使用跑道",
+                  "ZGNT进出港", "ZGUH进出港"]
+        sheet = [header]
+        for r in rows:
+            sheet.append([r["hour"], r["tm01"], r["tm02"], r["tm03"], r["tm04"],
+                          r["tm05"], r["tm06"], r["tm07"],
+                          r["zgsz_dep"], r["zgsz_arr"], r["zgsz_runway"],
+                          r["zgsd_dep"], r["zgsd_arr"], r["zgsd_runway"],
+                          r["vmmc_dep"], r["vmmc_arr"], r["vmmc_runway"],
+                          r["zgnt"], r["zguh"]])
+        xlsx_buf = make_xlsx([{"name": "时段流量", "rows": sheet}])
+        return send_file(
+            xlsx_buf,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=f"时段流量_{month}.xlsx",
+        )
+
     @app.route("/api/voice/status")
     def api_voice_status():
         """返回语音通道状态（含 ASR 文本）"""
@@ -873,6 +914,63 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         """返回语音配置参数"""
         return jsonify(_voice_config)
 
+    def _voice_duration_agg(mode: str, channel_id: int, terminal_code: str):
+        """月度/年度扇区负荷聚合
+
+        month: 返回该月每天的 [通话秒数, 架次]（长度=当月天数）
+        year:  返回该年每月的 [通话秒数, 架次]（长度=12）
+        架次使用静态扇区合并（子扇区 callsign 并入父扇区去重）。
+        """
+        from .voice_receiver import SECTOR_MERGE_RULES as _MERGE
+        import calendar as _cal
+
+        # 目标扇区 + 合并子扇区
+        merged_codes = [terminal_code] if terminal_code else []
+        if terminal_code:
+            merged_codes += [k for k, v in _MERGE.items() if v == terminal_code]
+
+        if mode == "month":
+            month = request.args.get("month", "") or datetime.utcnow().strftime("%Y-%m")
+            if len(month) != 7 or month[4] != "-":
+                return jsonify({"error": "月份格式应为 YYYY-MM"}), 400
+            year, mon = int(month[:4]), int(month[5:7])
+            ndays = _cal.monthrange(year, mon)[1]
+            labels = [f"{year:04d}-{mon:02d}-{d:02d}" for d in range(1, ndays + 1)]
+            period = month
+        else:
+            year = request.args.get("year", "") or str(datetime.utcnow().year)
+            if len(year) != 4 or not year.isdigit():
+                return jsonify({"error": "年份格式应为 YYYY"}), 400
+            labels = [f"{year}-{m:02d}" for m in range(1, 13)]
+            period = year
+
+        dur_map = {}
+        try:
+            for r in db.agg_voice_duration(channel_id, mode, period):
+                dur_map[r["key"]] = r["seconds"]
+        except Exception:
+            logger.exception("语音时长聚合失败")
+
+        flt_map = {}
+        if merged_codes:
+            try:
+                for r in db.agg_sector_traffic(merged_codes, mode, period):
+                    flt_map[r["key"]] = r["n"]
+            except Exception:
+                logger.exception("扇区架次聚合失败")
+
+        duration = [dur_map.get(k, 0) for k in labels]
+        flight_count = [flt_map.get(k, 0) for k in labels]
+        return jsonify({
+            "mode": mode,
+            "period": period,
+            "labels": labels,
+            "channel": channel_id,
+            "terminal_code": terminal_code,
+            "duration": duration,
+            "flight_count": flight_count,
+        })
+
     @app.route("/api/voice/duration")
     def api_voice_duration():
         """返回指定通道在指定日期的 144 个通话时长 + 扇区飞行架次（含扇区合并）
@@ -892,6 +990,11 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         # 通道号 → 终端扇区代码
         from .voice_receiver import CHANNEL_SECTORS, SECTOR_MERGE_RULES
         terminal_code = CHANNEL_SECTORS.get(channel_id, "")
+
+        # ── 月度 / 年度负荷聚合 ──
+        mode = request.args.get("mode", "day")
+        if mode in ("month", "year"):
+            return _voice_duration_agg(mode, channel_id, terminal_code)
 
         # 语音时长
         duration_data = voice_receiver.get_channel_duration(date_str, channel_id)

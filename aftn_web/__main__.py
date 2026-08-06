@@ -16,6 +16,7 @@ from .asr_receiver import AsrReceiver
 from .config import load_config
 from .database import Database, _fmt_dt, _pick_closest_datetime
 from .fdr_store import FDRStore, PROCESS_INTERVAL_SECONDS
+from .hourly_stats import HourlyStatsTracker
 from .radar_history import RadarHistoryStore
 from .radar_receiver import RadarReceiver, parse_datagram
 import json
@@ -294,11 +295,14 @@ def main(argv: list[str] | None = None) -> int:
             Path(config.db_path).parent / "radar_history",
             retention_days=90,
         )
+        hourly_tracker = HourlyStatsTracker()
 
         def on_radar_data(parsed: dict, addr: str, port: int, received_at: datetime) -> None:
             # 更新内存 FDR + 写入历史存储
             fdr_store.update_from_radar(parsed, received_at)
             radar_history_store.record(parsed, received_at)
+            # 收集跑道使用（时段流量用）
+            hourly_tracker.record_radar(parsed, received_at)
 
         radar_receiver = RadarReceiver(
             multicast_group=config.radar.multicast_group,
@@ -343,6 +347,41 @@ def main(argv: list[str] | None = None) -> int:
         fdr_thread = Thread(target=fdr_processor, daemon=True, name="fdr-processor")
         fdr_thread.start()
         logger.info("FDR processor started (interval=%ds)", PROCESS_INTERVAL_SECONDS)
+
+        # ── 时段流量统计：每小时整点保存上一小时数据 ──
+        _last_hourly_save = [""]
+
+        def hourly_traffic_processor() -> None:
+            # 启动补存：覆盖最近 6 小时（UPSERT 保留已有跑道）
+            try:
+                now0 = datetime.utcnow()
+                for i in range(1, 7):
+                    h = now0 - timedelta(hours=i)
+                    hourly_tracker.compute_and_save(db, h)
+                _last_hourly_save[0] = (now0 - timedelta(hours=1)).strftime("%Y-%m-%d %H:00")
+                logger.info("时段流量启动补存完成（最近 6 小时）")
+            except Exception:
+                logger.exception("时段流量启动补存异常")
+
+            while not stop_requested[0]:
+                time.sleep(30)
+                if stop_requested[0]:
+                    break
+                try:
+                    now = datetime.utcnow()
+                    # 整点触发（30 秒窗口内），保存上一小时
+                    if now.minute == 0:
+                        prev = now - timedelta(hours=1)
+                        key = prev.strftime("%Y-%m-%d %H:00")
+                        if _last_hourly_save[0] != key:
+                            hourly_tracker.compute_and_save(db, prev)
+                            _last_hourly_save[0] = key
+                            logger.info("时段流量已保存: %s", key)
+                except Exception:
+                    logger.exception("时段流量处理异常")
+
+        Thread(target=hourly_traffic_processor, daemon=True, name="hourly-traffic").start()
+        logger.info("Hourly traffic processor started")
     else:
         logger.info("radar receiver: disabled")
 

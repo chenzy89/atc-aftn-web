@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.32</title>
+<title>ATC综合数据中心 v2.2.33</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.32</span>
+  <span class="badge">v2.2.33</span>
 </div>
 
 <div class="tabs">
@@ -632,6 +632,7 @@ canvas#radarMap {
       <label><span>截止日期 (UTC)</span><input id="st-dt" type="date"></label>
       <button class="btn btn-primary" onclick="generateStats()" style="margin-left:8px;">🔍 查询</button>
       <button class="btn btn-secondary" onclick="exportStatsXlsx()" style="margin-left:8px;">导出</button>
+      <button class="btn btn-secondary" onclick="openHourlyTrafficDialog()" style="margin-left:8px;">📊 时段流量</button>
       <span id="st-info" class="text-muted" style="margin-left:8px;"></span>
     </div>
   </div>
@@ -684,6 +685,30 @@ canvas#radarMap {
           </table>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 时段流量弹窗 ── -->
+<div class="map-layers-overlay" id="htOverlay">
+  <div class="map-layers-dialog" style="min-width:1150px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;padding:16px 20px;">
+    <h3 style="margin-bottom:10px;">时段流量
+      <span style="font-weight:normal;font-size:12px;color:var(--text-muted);">每小时扇区/机场架次 + 使用跑道（UTC）</span>
+    </h3>
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px;">
+      <label><span>月份</span><input type="month" id="ht-month"></label>
+      <button class="btn btn-primary btn-sm" onclick="loadHourlyTraffic()">🔍 查询</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportHourlyTraffic()">⬇ 导出</button>
+      <span id="ht-info" class="text-muted"></span>
+    </div>
+    <div style="overflow:auto;flex:1;border:1px solid var(--border);border-radius:6px;">
+      <table id="ht-tbl" style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap;">
+        <thead id="ht-head"></thead>
+        <tbody id="ht-body"></tbody>
+      </table>
+    </div>
+    <div class="map-layers-close" style="margin-top:10px;">
+      <button onclick="closeHourlyTrafficDialog()">关闭</button>
     </div>
   </div>
 </div>
@@ -1467,6 +1492,93 @@ function generateStats() {
   }).catch(function(e) {
     document.getElementById('st-info').textContent = '❌ 查询失败: ' + e;
   });
+}
+
+/* ── 时段流量弹窗 ── */
+var _htCols = [
+  {k:'hour', t:'时段'},
+  {k:'tm01', t:'TM01'},{k:'tm02', t:'TM02'},{k:'tm03', t:'TM03'},{k:'tm04', t:'TM04'},
+  {k:'tm05', t:'TM05'},{k:'tm06', t:'TM06'},{k:'tm07', t:'TM07'},
+  {k:'zgsz_dep', t:'ZGSZ出港'},{k:'zgsz_arr', t:'ZGSZ进港'},{k:'zgsz_runway', t:'ZGSZ跑道'},
+  {k:'zgsd_dep', t:'ZGSD出港'},{k:'zgsd_arr', t:'ZGSD进港'},{k:'zgsd_runway', t:'ZGSD跑道'},
+  {k:'vmmc_dep', t:'VMMC出港'},{k:'vmmc_arr', t:'VMMC进港'},{k:'vmmc_runway', t:'VMMC跑道'},
+  {k:'zgnt', t:'ZGNT'},{k:'zguh', t:'ZGUH'}
+];
+
+function openHourlyTrafficDialog() {
+  var m = document.getElementById('ht-month');
+  if (!m.value) {
+    var d = new Date();
+    m.value = d.getUTCFullYear() + '-' + _zp(d.getUTCMonth() + 1);
+  }
+  document.getElementById('htOverlay').classList.add('show');
+  loadHourlyTraffic();
+}
+
+function closeHourlyTrafficDialog() {
+  document.getElementById('htOverlay').classList.remove('show');
+}
+
+function loadHourlyTraffic() {
+  var month = document.getElementById('ht-month').value;
+  if (!month) { alert('请选择月份'); return; }
+  var info = document.getElementById('ht-info');
+  info.textContent = '查询中...';
+  fetch('/api/hourly_traffic?month=' + month)
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { info.textContent = '❌ ' + d.error; return; }
+      renderHourlyTraffic(d.rows || []);
+      info.textContent = '✅ 共 ' + (d.rows || []).length + ' 条';
+    })
+    .catch(function(e) { info.textContent = '❌ 查询失败: ' + e; });
+}
+
+function renderHourlyTraffic(rows) {
+  var head = document.getElementById('ht-head');
+  var body = document.getElementById('ht-body');
+  var hdr = '<tr style="background:#1c2333;">';
+  _htCols.forEach(function(c) {
+    hdr += '<th style="padding:6px 10px;text-align:left;font-weight:600;color:var(--text-secondary);border-bottom:2px solid var(--border);">' + c.t + '</th>';
+  });
+  hdr += '</tr>';
+  head.innerHTML = hdr;
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="' + _htCols.length + '" style="padding:24px;text-align:center;color:var(--text-muted);">该月暂无时段流量数据</td></tr>';
+    return;
+  }
+  var html = '';
+  rows.forEach(function(r) {
+    html += '<tr style="border-bottom:1px solid var(--border);">';
+    _htCols.forEach(function(c) {
+      var v = r[c.k];
+      if (v === null || v === undefined) v = '';
+      var isNum = (typeof v === 'number');
+      html += '<td style="padding:5px 10px;' + (isNum ? 'text-align:right;' : '') + '">' + _escapeHtml(String(v)) + '</td>';
+    });
+    html += '</tr>';
+  });
+  body.innerHTML = html;
+}
+
+function exportHourlyTraffic() {
+  var month = document.getElementById('ht-month').value;
+  if (!month) { alert('请先选择月份'); return; }
+  fetch('/api/hourly_traffic/export', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({month: month})
+  })
+    .then(function(r) { return r.blob(); })
+    .then(function(b) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = '时段流量_' + month + '.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+    })
+    .catch(function(e) { alert('导出失败: ' + e); });
 }
 
 function renderStats(d, aps, df, dt) {
@@ -4960,7 +5072,14 @@ function voiceRenderChart(idx, channelId) {
     + '<div class="voice-chart-toolbar">'
     + '  <h3>扇区负荷 #' + (idx + 1) + '</h3>'
     + '  <div class="voice-chart-controls">'
+    + '    <label><span>模式</span><select id="voiceChartMode_' + idx + '" onchange="voiceModeChanged(' + idx + ')">'
+    + '      <option value="day">日（10分钟）</option>'
+    + '      <option value="month">月（日）</option>'
+    + '      <option value="year">年（月）</option>'
+    + '    </select></label>'
     + '    <label><span>日期</span><input type="date" id="voiceChartDate_' + idx + '"></label>'
+    + '    <label style="display:none;"><span>月份</span><input type="month" id="voiceChartMonth_' + idx + '"></label>'
+    + '    <label style="display:none;"><span>年份</span><input type="number" id="voiceChartYear_' + idx + '" min="2020" max="2100" style="width:80px;"></label>'
     + '    <label><span>扇区</span><select id="voiceChartChannel_' + idx + '" onchange="voiceLoadChart(' + idx + ')"><option value="-1">— 选择扇区 —</option></select></label>'
     + '    <label><span>Y轴架次</span><input type="number" id="voiceChartFlightMax_' + idx + '" value="18" min="1" max="200" style="width:60px;"></label>'
     + '    <button class="btn btn-primary btn-sm" onclick="voiceLoadChart(' + idx + ')">📊 查询</button>'
@@ -4979,6 +5098,11 @@ function voiceRenderChart(idx, channelId) {
   var todayUTC = d.getUTCFullYear() + '-' + _zp(d.getUTCMonth()+1) + '-' + _zp(d.getUTCDate());
   var dateInput = _chartEl('voiceChartDate', idx);
   if (dateInput) dateInput.value = todayUTC;
+  // 初始化月份 / 年份
+  var mInput = _chartEl('voiceChartMonth', idx);
+  if (mInput) mInput.value = d.getUTCFullYear() + '-' + _zp(d.getUTCMonth()+1);
+  var yInput = _chartEl('voiceChartYear', idx);
+  if (yInput) yInput.value = d.getUTCFullYear();
 
   // 填充通道选项
   if (window._lastChannels) {
@@ -4998,40 +5122,89 @@ function voiceLoadAllCharts() {
   }
 }
 
+function voiceModeChanged(idx) {
+  var modeSel = _chartEl('voiceChartMode', idx);
+  var mode = modeSel ? modeSel.value : 'day';
+  var d = new Date();
+  var dateInput = _chartEl('voiceChartDate', idx);
+  var mInput = _chartEl('voiceChartMonth', idx);
+  var yInput = _chartEl('voiceChartYear', idx);
+  if (dateInput) dateInput.style.display = (mode === 'day') ? '' : 'none';
+  if (mInput) {
+    mInput.style.display = (mode === 'month') ? '' : 'none';
+    if (mode === 'month' && !mInput.value) mInput.value = d.getUTCFullYear() + '-' + _zp(d.getUTCMonth()+1);
+  }
+  if (yInput) {
+    yInput.style.display = (mode === 'year') ? '' : 'none';
+    if (mode === 'year' && !yInput.value) yInput.value = d.getUTCFullYear();
+  }
+  voiceLoadChart(idx);
+}
+
 function voiceLoadChart(idx) {
   if (idx === undefined) idx = 0;
+  var modeSel = _chartEl('voiceChartMode', idx);
+  var mode = modeSel ? modeSel.value : 'day';
   var dateInput = _chartEl('voiceChartDate', idx);
+  var mInput = _chartEl('voiceChartMonth', idx);
+  var yInput = _chartEl('voiceChartYear', idx);
   var chSel = _chartEl('voiceChartChannel', idx);
   var fmInput = _chartEl('voiceChartFlightMax', idx);
   var dateStr = dateInput ? dateInput.value : '';
+  var monthStr = mInput ? mInput.value : '';
+  var yearStr = yInput ? yInput.value : '';
   var ch = chSel ? parseInt(chSel.value) : -1;
   var flightMax = fmInput ? parseInt(fmInput.value) || 18 : 18;
 
-  // 自动填充 UTC 日期
+  // 自动填充默认值
   if (!dateStr && dateInput) {
     var d = new Date();
     dateStr = d.getUTCFullYear() + '-' + _zp(d.getUTCMonth()+1) + '-' + _zp(d.getUTCDate());
     dateInput.value = dateStr;
   }
+  if (!monthStr && mInput) {
+    var d2 = new Date();
+    monthStr = d2.getUTCFullYear() + '-' + _zp(d2.getUTCMonth()+1);
+    mInput.value = monthStr;
+  }
+  if (!yearStr && yInput) {
+    yearStr = String(new Date().getUTCFullYear());
+    yInput.value = yearStr;
+  }
 
   var emptyEl = _chartEl('voiceChartEmpty', idx);
-  if (!dateStr || ch < 0) {
-    if (emptyEl) { emptyEl.style.display = 'block'; emptyEl.textContent = '请选择日期和通道'; }
+  var periodOk = (mode === 'day' && dateStr) || (mode === 'month' && monthStr) || (mode === 'year' && yearStr);
+  if (!periodOk || ch < 0) {
+    if (emptyEl) {
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = '请选择' + (mode === 'day' ? '日期' : (mode === 'month' ? '月份' : '年份')) + '和通道';
+    }
     return;
   }
 
   if (emptyEl) { emptyEl.textContent = '加载中...'; emptyEl.style.display = 'block'; }
 
-  // 判断是否为今天（UTC）— 需要获取昨日参考数据
-  var now = new Date();
-  var todayUTC = now.getUTCFullYear() + '-' + _zp(now.getUTCMonth()+1) + '-' + _zp(now.getUTCDate());
-  var isToday = (dateStr === todayUTC);
+  var url = '/api/voice/duration?channel=' + ch + '&mode=' + mode;
+  var isToday = false;
+  var displayPeriod = dateStr;
+  if (mode === 'day') {
+    // 判断是否为今天（UTC）— 需要获取昨日参考数据
+    var now = new Date();
+    var todayUTC = now.getUTCFullYear() + '-' + _zp(now.getUTCMonth()+1) + '-' + _zp(now.getUTCDate());
+    isToday = (dateStr === todayUTC);
+    url += '&date=' + encodeURIComponent(dateStr);
+    if (isToday) url += '&include_yesterday=1';
+  } else if (mode === 'month') {
+    displayPeriod = monthStr;
+    url += '&month=' + encodeURIComponent(monthStr);
+  } else {
+    displayPeriod = yearStr;
+    url += '&year=' + encodeURIComponent(yearStr);
+  }
 
-  var url = '/api/voice/duration?date=' + encodeURIComponent(dateStr) + '&channel=' + ch;
-  if (isToday) url += '&include_yesterday=1';
-
-  var cloudUrl = '/api/cloud-cover?date=' + encodeURIComponent(dateStr);
-  var cloudFetch = fetch(cloudUrl).then(function(r) { return r.json(); }).catch(function() { return null; });
+  var cloudFetch = (mode === 'day')
+    ? fetch('/api/cloud-cover?date=' + encodeURIComponent(dateStr)).then(function(r) { return r.json(); }).catch(function() { return null; })
+    : Promise.resolve(null);
   var voiceFetch = fetch(url).then(function(r) { return r.json(); }).catch(function() { return null; });
 
   Promise.all([voiceFetch, cloudFetch])
@@ -5047,15 +5220,16 @@ function voiceLoadChart(idx) {
       var serverMax = data.flight_count_max || 18;
       var useMax = flightMax || serverMax;
       voiceDrawChart(
-        data.duration || [], data.flight_count || [], dateStr, ch, data.terminal_code || '', useMax,
+        data.duration || [], data.flight_count || [], displayPeriod, ch, data.terminal_code || '', useMax,
         isToday, data.yesterday_duration || null, data.yesterday_flight_count || null, idx,
-        cloudData
+        cloudData, mode, data.labels || null
       );
     });
 }
 
-function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCode, flightMax, isToday, yesterdayDuration, yesterdayFlight, canvasIdx, cloudData) {
+function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCode, flightMax, isToday, yesterdayDuration, yesterdayFlight, canvasIdx, cloudData, mode, labels) {
   if (canvasIdx === undefined) canvasIdx = 0;
+  if (mode === undefined) mode = 'day';
   var canvas = document.getElementById('voiceChart_' + canvasIdx);
   if (!canvas || !durationData) return;
 
@@ -5074,9 +5248,21 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
 
   ctx.clearRect(0, 0, W, H);
 
+  // 日视图：通话时长 Y 轴固定 600s（10 分钟槽上限）；月/年视图自动缩放
+  var numPoints = durationData.length || 144;
+  var denom = (numPoints - 1) || 1;
   var maxDur = 600;
+  if (mode !== 'day') {
+    var maxDV = 0;
+    for (var di = 0; di < durationData.length; di++) { if (durationData[di] > maxDV) maxDV = durationData[di]; }
+    maxDur = Math.max(100, Math.ceil(maxDV / 100) * 100);
+  }
   var maxFlights = flightMax || 18;
-  var numPoints = 144;
+  if (mode !== 'day' && flightData && flightData.length) {
+    var maxFV = 0;
+    for (var fi = 0; fi < flightData.length; fi++) { if (flightData[fi] > maxFV) maxFV = flightData[fi]; }
+    maxFlights = Math.max(1, maxFV);
+  }
 
   // ── 跨日参考逻辑 ──
   var currentSlot = -1;
@@ -5116,12 +5302,29 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   ctx.font = '10px sans-serif';
   ctx.textAlign = 'center';
   var xAxisY = PAD.top + plotH + 25;
-  for (var h = 0; h < 24; h += 2) {
-    var idx = h * 6;
-    var xx = PAD.left + (idx / 143) * plotW;
-    ctx.fillText((h === 0 ? '0:00' : h + ':00'), xx, H - 8);
+  if (mode === 'day') {
+    for (var h = 0; h < 24; h += 2) {
+      var idx = h * 6;
+      var xx = PAD.left + (idx / denom) * plotW;
+      ctx.fillText((h === 0 ? '0:00' : h + ':00'), xx, H - 8);
+    }
+    ctx.fillText('24:00', W - PAD.right, H - 8);
+  } else if (mode === 'month') {
+    // 月视图：每 5 天标一个日期 + 最后一天
+    for (var md = 0; md < numPoints; md++) {
+      if (md % 5 !== 0 && md !== numPoints - 1) continue;
+      var mxx = PAD.left + (md / denom) * plotW;
+      var dnum = labels && labels[md] ? parseInt(labels[md].slice(8), 10) : (md + 1);
+      ctx.fillText(dnum + '日', mxx, H - 8);
+    }
+  } else {
+    // 年视图：每月标一个
+    for (var ym = 0; ym < numPoints; ym++) {
+      var yxx = PAD.left + (ym / denom) * plotW;
+      var mnum = labels && labels[ym] ? parseInt(labels[ym].slice(5, 7), 10) : (ym + 1);
+      ctx.fillText(mnum + '月', yxx, H - 8);
+    }
   }
-  ctx.fillText('24:00', W - PAD.right, H - 8);
 
   // ════════════════════════════════════════════
   // 云量条（每小时色块）
@@ -5135,8 +5338,8 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
     var cloudThresholds = [0, 0.18, 0.25, 0.5, 1.0, 1.5, 2.5, 4.0, 6.0, 8.0, 12.0, 99999];
 
     for (var hh = 0; hh < 24; hh++) {
-      var x1 = PAD.left + (hh * 6 / 143) * plotW;
-      var x2 = PAD.left + ((hh + 1) * 6 / 143) * plotW;
+      var x1 = PAD.left + (hh * 6 / denom) * plotW;
+      var x2 = PAD.left + ((hh + 1) * 6 / denom) * plotW;
       if (hh === 23) x2 = W - PAD.right;
       var w = x2 - x1;
 
@@ -5179,7 +5382,7 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
       ctx.textAlign = 'left';
       ctx.fillText('日均 ' + dayAvg + 'KB (' + avgCnt + 'h)', W - PAD.right + 6, cloudBarY + cloudBarH - 2);
     }
-  } else {
+  } else if (mode === 'day') {
     // 无云量数据，画一条提示线
     ctx.fillStyle = 'rgba(139,148,158,0.2)';
     ctx.font = '9px sans-serif';
@@ -5193,12 +5396,12 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   if (hasReference) {
     // 飞行架次柱形图（昨日参考 — 半透明）
     if (yesterdayFlight && yesterdayFlight.length) {
-      var barW = Math.max(2, (plotW / 144) * 0.6);
+      var barW = Math.max(2, (plotW / numPoints) * 0.6);
       for (var i = maskStartSlot; i < numPoints; i++) {
         var val = yesterdayFlight[i] || 0;
         if (val <= 0) continue;
         var valClamped = Math.min(val, maxFlights);
-        var x = PAD.left + (i / 143) * plotW;
+        var x = PAD.left + (i / denom) * plotW;
         var barH = (valClamped / maxFlights) * plotH;
         var y = PAD.top + plotH - barH;
         ctx.fillStyle = 'rgba(210,153,34,0.35)';
@@ -5213,7 +5416,7 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
     ctx.setLineDash([4, 4]);
     var firstRef = true;
     for (var i = maskStartSlot; i < numPoints; i++) {
-      var x = PAD.left + (i / 143) * plotW;
+      var x = PAD.left + (i / denom) * plotW;
       var val = Math.min(yesterdayDuration[i] || 0, maxDur);
       var y = PAD.top + plotH - (val / maxDur) * plotH;
       if (firstRef) { ctx.moveTo(x, y); firstRef = false; }
@@ -5234,7 +5437,7 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   var first = true;
   var todayEndIdx = hasReference ? maskStartSlot : numPoints;
   for (var i = 0; i < todayEndIdx; i++) {
-    var x = PAD.left + (i / 143) * plotW;
+    var x = PAD.left + (i / denom) * plotW;
     var val;
     if (hasReference && i >= currentSlot) {
       val = 0; // 缓冲区域强制为 0
@@ -5247,7 +5450,7 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   }
   // 如果今日数据有效，闭合填充区域
   if (todayEndIdx > 0) {
-    var lastX = PAD.left + ((todayEndIdx - 1) / 143) * plotW;
+    var lastX = PAD.left + ((todayEndIdx - 1) / denom) * plotW;
     ctx.lineTo(lastX, PAD.top + plotH);
     ctx.lineTo(PAD.left, PAD.top + plotH);
     ctx.closePath();
@@ -5258,13 +5461,13 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
 
   // ── 飞行架次柱形图（今日） ──
   if (flightData && flightData.length) {
-    var barW = Math.max(2, (plotW / 144) * 0.6);
+    var barW = Math.max(2, (plotW / numPoints) * 0.6);
     for (var i = 0; i < todayEndIdx && i < flightData.length; i++) {
       if (hasReference && i >= currentSlot) continue;
       var val = flightData[i] || 0;
       if (val <= 0) continue;
       var valClamped = Math.min(val, maxFlights);
-      var x = PAD.left + (i / 143) * plotW;
+      var x = PAD.left + (i / denom) * plotW;
       var barH = (valClamped / maxFlights) * plotH;
       var y = PAD.top + plotH - barH;
       ctx.fillStyle = 'rgba(210,153,34,0.7)';
@@ -5276,8 +5479,8 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   // 缓冲区域标记
   // ════════════════════════════════════════════
   if (hasReference && currentSlot < maskStartSlot - 1) {
-    var bufX1 = PAD.left + (currentSlot / 143) * plotW;
-    var bufX2 = PAD.left + ((maskStartSlot - 1) / 143) * plotW;
+    var bufX1 = PAD.left + (currentSlot / denom) * plotW;
+    var bufX2 = PAD.left + ((maskStartSlot - 1) / denom) * plotW;
     ctx.fillStyle = 'rgba(255,165,0,0.06)';
     ctx.fillRect(bufX1, PAD.top, bufX2 - bufX1, plotH);
     ctx.fillStyle = 'rgba(255,165,0,0.5)';
@@ -5290,7 +5493,7 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   // 参考区域遮罩（半透明 + 斜纹理 + 分隔线）
   // ════════════════════════════════════════════
   if (hasReference && maskStartSlot < numPoints) {
-    var maskX = PAD.left + (maskStartSlot / 143) * plotW;
+    var maskX = PAD.left + (maskStartSlot / denom) * plotW;
 
     // 半透明遮罩底层
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
@@ -5336,6 +5539,8 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   ctx.textAlign = 'left';
   var secName = terminalCode || _chSectorNames[channelId] || ('CH' + channelId);
   var title = '扇区 ' + secName + ' - ' + dateStr + ' (UTC)';
+  if (mode === 'month') title = '扇区 ' + secName + ' - ' + dateStr + '月 负荷 (UTC)';
+  if (mode === 'year') title = '扇区 ' + secName + ' - ' + dateStr + '年 负荷 (UTC)';
   if (isToday) title += '  [实时]';
   ctx.fillText(title, PAD.left, 16);
 
@@ -5344,12 +5549,12 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   ctx.fillRect(legX, 6, 12, 3);
   ctx.fillStyle = '#8b949e';
   ctx.font = '10px sans-serif';
-  ctx.fillText('今日通话时长', legX + 16, 12);
+  ctx.fillText('通话时长', legX + 16, 12);
 
   ctx.fillStyle = '#d29922';
   ctx.fillRect(legX + 90, 6, 12, 3);
   ctx.fillStyle = '#8b949e';
-  ctx.fillText('今日飞行架次', legX + 106, 12);
+  ctx.fillText('飞行架次', legX + 106, 12);
 
   if (hasReference) {
     ctx.setLineDash([4, 4]);
@@ -5384,7 +5589,7 @@ function voiceDrawChart(durationData, flightData, dateStr, channelId, terminalCo
   ctx.fillStyle = '#8b949e';
   ctx.font = '9px sans-serif';
   ctx.textAlign = 'right';
-  ctx.fillText('max 600s / ' + maxFlights + '架次', W - PAD.right - 6, PAD.top - 2);
+  ctx.fillText('max ' + maxDur + 's / ' + maxFlights + '架次', W - PAD.right - 6, PAD.top - 2);
 
   // 存储云量条位置，供点击检测
   canvas._cloudBarY = cloudData && cloudData.hours ? PAD.top + plotH + 6 : -1;
