@@ -1706,6 +1706,53 @@ class Database:
         rows = conn.execute(sql, (channel, period + "%")).fetchall()
         return [{"key": r["key"], "seconds": r["seconds"]} for r in rows]
 
+    def get_asr_duration_10min(self, date_str: str, sector: str) -> list[float]:
+        """返回指定日期+扇区的 144 个 10 分钟通话时长（秒）。
+
+        数据源：ASR 识别数据包的 duration 字段（语音时长，秒），
+        按 wavbegintime（UTC）落入 10 分钟槽累加。
+        """
+        from datetime import datetime as _dt, timedelta as _td
+        conn = self._get_conn()
+        try:
+            next_day = (_dt.strptime(date_str, "%Y-%m-%d") + _td(days=1)).strftime("%Y-%m-%d")
+        except ValueError:
+            return [0.0] * 144
+        rows = conn.execute(
+            "SELECT wavbegintime, duration FROM asr_text "
+            "WHERE sector=? AND wavbegintime >= ? AND wavbegintime < ?",
+            (sector, date_str + " 00:00", next_day + " 00:00"),
+        ).fetchall()
+        buckets = [0.0] * 144
+        for wbt, dur in rows:
+            try:
+                h, m = int(wbt[11:13]), int(wbt[14:16])
+                slot = (h * 60 + m) // 10
+                if 0 <= slot < 144 and dur:
+                    buckets[slot] += dur
+            except (ValueError, TypeError, IndexError):
+                continue
+        return buckets
+
+    def agg_asr_duration(self, sector: str, mode: str,
+                         period: str) -> list[dict]:
+        """按 ASR 识别数据聚合通话时长（duration 字段，秒）
+
+        mode: 'month' → 按天；'year' → 按月
+        返回 [{key, seconds}]，key 为 'YYYY-MM-DD' 或 'YYYY-MM'
+        """
+        conn = self._get_conn()
+        if mode == "month":
+            sql = ("SELECT substr(wavbegintime,1,10) key, ROUND(SUM(duration),1) seconds "
+                   "FROM asr_text WHERE sector=? AND wavbegintime LIKE ? "
+                   "GROUP BY substr(wavbegintime,1,10) ORDER BY key")
+        else:
+            sql = ("SELECT substr(wavbegintime,1,7) key, ROUND(SUM(duration),1) seconds "
+                   "FROM asr_text WHERE sector=? AND wavbegintime LIKE ? "
+                   "GROUP BY substr(wavbegintime,1,7) ORDER BY key")
+        rows = conn.execute(sql, (sector, period + "%")).fetchall()
+        return [{"key": r["key"], "seconds": r["seconds"]} for r in rows]
+
     def agg_sector_traffic(self, terminal_codes: list[str], mode: str,
                            period: str) -> list[dict]:
         """聚合扇区架次（含静态扇区合并，子扇区 callsign 并入父扇区去重）

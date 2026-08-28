@@ -968,8 +968,11 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
 
         dur_map = {}
         try:
-            for r in db.agg_voice_duration(channel_id, mode, period):
-                dur_map[r["key"]] = r["seconds"]
+            # 改用 ASR 识别数据聚合通话时长（发射端不稳定，语音通道时长不可靠）
+            asr_sector = _SECTOR_CODE_TO_SHORT.get(terminal_code, "")
+            if asr_sector:
+                for r in db.agg_asr_duration(asr_sector, mode, period):
+                    dur_map[r["key"]] = r["seconds"]
         except Exception:
             logger.exception("语音时长聚合失败")
 
@@ -1018,8 +1021,12 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         if mode in ("month", "year"):
             return _voice_duration_agg(mode, channel_id, terminal_code)
 
-        # 语音时长
-        duration_data = voice_receiver.get_channel_duration(date_str, channel_id)
+        # 语音时长（改用 ASR 识别数据的 duration 字段，替代语音通道 VAD 时长——发射端不稳定）
+        asr_sector = _SECTOR_CODE_TO_SHORT.get(terminal_code, "")
+        if asr_sector:
+            duration_data = db.get_asr_duration_10min(date_str, asr_sector)
+        else:
+            duration_data = voice_receiver.get_channel_duration(date_str, channel_id)
 
         # 构建通话活动映射（所有扇区）
         voice_active_map = voice_receiver.build_voice_activity_map(date_str)
@@ -1058,7 +1065,10 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
             try:
                 dt = datetime.strptime(date_str, "%Y-%m-%d")
                 yesterday_str = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
-                result["yesterday_duration"] = voice_receiver.get_channel_duration(yesterday_str, channel_id)
+                if asr_sector:
+                    result["yesterday_duration"] = db.get_asr_duration_10min(yesterday_str, asr_sector)
+                else:
+                    result["yesterday_duration"] = voice_receiver.get_channel_duration(yesterday_str, channel_id)
 
                 # 昨日也要考虑合并
                 yesterday_voice_map = voice_receiver.build_voice_activity_map(yesterday_str)
