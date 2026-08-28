@@ -647,6 +647,12 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from io import BytesIO
+        import re as _re
+
+        # openpyxl 不允许写入 XML 非法控制字符（\x00-\x08 \x0b \x0c \x0e-\x1f），
+        # 雷达等来源的数据可能带脏字符，统一清洗
+        _ILLEGAL_XML_RE = _re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+        _clean = lambda v: _ILLEGAL_XML_RE.sub("", v) if isinstance(v, str) else v
 
         callsign = _req_str("callsign")
         adep = _req_str("adep")
@@ -682,7 +688,7 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
 
         headers = ["ID", "航班号", "规则与种类", "移交点", "机型", "DOF",
                    "起飞地", "ETD", "ATD", "目的地", "ETA", "ATA",
-                   "跑道", "飞行程序", "航路", "报文", "报文时间"]
+                   "跑道", "飞行程序", "进终端", "出终端", "终端时长", "航路", "报文", "报文时间"]
         hdr_font = Font(bold=True, color="FFFFFF", size=11)
         hdr_fill = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
         thin_border = Border(
@@ -700,6 +706,7 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
             cell.border = thin_border
 
         for row_idx, rec in enumerate(records, 2):
+            rec = {k: _clean(v) for k, v in rec.items()}
             ws.cell(row=row_idx, column=1, value=rec.get("id", ""))
             ws.cell(row=row_idx, column=2, value=rec.get("callsign", ""))
             ws.cell(row=row_idx, column=3, value=rec.get("flight_rule", ""))
@@ -714,14 +721,19 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
             ws.cell(row=row_idx, column=12, value=_safe_dt(rec.get("ata")))
             ws.cell(row=row_idx, column=13, value=rec.get("runway", ""))
             ws.cell(row=row_idx, column=14, value=rec.get("flight_procedure", ""))
-            ws.cell(row=row_idx, column=15, value=rec.get("route", ""))
-            ws.cell(row=row_idx, column=16, value=rec.get("message_types", ""))
-            ws.cell(row=row_idx, column=17, value=_safe_dt(rec.get("last_message_time")))
-            for col in range(1, 18):
+            ws.cell(row=row_idx, column=15, value=_safe_dt(rec.get("entry_time")))
+            ws.cell(row=row_idx, column=16, value=_safe_dt(rec.get("exit_time")))
+            tft = rec.get("terminal_flight_time")
+            ws.cell(row=row_idx, column=17,
+                    value=(f"{int(tft)//60}m {int(tft)%60}s" if tft else ""))
+            ws.cell(row=row_idx, column=18, value=rec.get("route", ""))
+            ws.cell(row=row_idx, column=19, value=rec.get("message_types", ""))
+            ws.cell(row=row_idx, column=20, value=_safe_dt(rec.get("last_message_time")))
+            for col in range(1, 21):
                 ws.cell(row=row_idx, column=col).border = thin_border
                 ws.cell(row=row_idx, column=col).alignment = Alignment(vertical="center")
 
-        col_widths = [6, 14, 10, 12, 12, 10, 8, 12, 8, 16, 16, 10, 16, 16, 50, 10, 30, 16]
+        col_widths = [6, 14, 10, 12, 12, 10, 8, 12, 8, 16, 16, 10, 16, 16, 12, 12, 12, 50, 10, 16]
         for i, w in enumerate(col_widths, 1):
             # column letter (A-Z, AA, AB...)
             letter = ""
