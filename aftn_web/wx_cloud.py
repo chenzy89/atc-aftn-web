@@ -40,6 +40,7 @@ import io
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,41 @@ from PIL import Image
 logger = logging.getLogger("aftn_web.wx_cloud")
 
 WXMAP_DIR = Path("/mnt/WXMap")
+
+# 补全缓存：{(year, month): 上次补全时间戳}，短时间内不重复补全
+_BACKFILL_CACHE: dict[tuple[int, int], float] = {}
+_BACKFILL_CACHE_TTL = 600.0  # 10 分钟
+_backfill_lock = threading.Lock()
+
+
+def _safe_is_dir(p: Path) -> bool:
+    """安全判断目录是否存在。
+
+    Python 3.8 的 Path.is_dir() 对 ENODEV(19, No such device) 会重新抛出 OSError
+    （挂载盘设备失效但挂载点仍在时），这里统一按“不存在”处理，避免刷屏。
+    """
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def is_wxmap_mounted() -> bool:
+    """判断天气图挂载盘是否已挂载且可读。
+
+    - 目录不存在 / 设备失效（stale mount，os.stat 抛 ENODEV）→ False
+    - 是挂载点且可访问，或目录存在可读 → True
+    """
+    try:
+        if not WXMAP_DIR.exists():
+            return False
+        if os.path.ismount(str(WXMAP_DIR)):
+            return True
+        # 非挂载点但目录可读（本地目录/测试环境也算可用）
+        os.listdir(str(WXMAP_DIR))
+        return True
+    except OSError:
+        return False
 
 # 云量等级阈值（KB）—— 裁剪区域 X550~780, Y280~380，范围约 0.16~8 KB
 CLOUD_LEVELS = [
@@ -167,8 +203,8 @@ def process_date(mmdd_str: str) -> dict[str, dict[int, dict[str, Any]]] | None:
     year, month, day = parsed
 
     dir_path = WXMAP_DIR / mmdd_str
-    if not dir_path.is_dir():
-        logger.warning("目录不存在: %s", dir_path)
+    if not _safe_is_dir(dir_path):
+        logger.info("目录不存在或不可用: %s", dir_path)
         return None
 
     # 按 UTC 日期+小时收集所有裁剪后的大小
@@ -249,14 +285,14 @@ def process_and_store_day(db, mmdd_str: str) -> int:
 def scan_all(db) -> int:
     """扫描所有 MMDD 目录并处理，返回处理的总小时数"""
     total = 0
-    if not WXMAP_DIR.is_dir():
-        logger.warning("WXMap目录不存在: %s", WXMAP_DIR)
+    if not _safe_is_dir(WXMAP_DIR):
+        logger.info("WXMap目录不存在或不可用: %s", WXMAP_DIR)
         return 0
 
     for entry in sorted(os.listdir(str(WXMAP_DIR))):
         if not re.match(r"^\d{4}$", entry):
             continue
-        if not (WXMAP_DIR / entry).is_dir():
+        if not _safe_is_dir(WXMAP_DIR / entry):
             continue
 
         stored = process_and_store_day(db, entry)
@@ -285,8 +321,8 @@ def process_today_hourly(db) -> int:
     bj_dt = now_utc + timedelta(hours=8)
     mmdd_str = f"{bj_dt.month:02d}{bj_dt.day:02d}"
     dir_path = WXMAP_DIR / mmdd_str
-    if not dir_path.is_dir():
-        logger.warning("北京时目录不存在: %s", dir_path)
+    if not _safe_is_dir(dir_path):
+        logger.info("北京时目录不存在或不可用: %s", dir_path)
         return 0
 
     # 检查这个 UTC 小时是否已处理
@@ -328,3 +364,69 @@ def process_today_hourly(db) -> int:
     logger.info("已记录云量 UTC %s/%d (北京时 %s %02d:xx): avg=%.1fKB (%d张)",
                  utc_date, utc_hour, mmdd_str, bj_hour, avg_kb, len(sizes))
     return 1
+
+
+def backfill_month(db, year: int, month: int) -> dict[str, Any]:
+    """检查挂载盘并补全指定 UTC 年月的云量数据。
+
+    云图目录按北京时命名（MMDD），UTC 月份 YYYY-MM 对应的北京时日期范围是
+    YYYY-MM-01 ～ YYYY-(MM+1)-01，全部处理一遍（INSERT OR REPLACE 幂等）。
+
+    返回:
+        mounted: 挂载盘是否已挂载
+        processed_days / stored_hours: 处理目录数 / 新写入小时数
+        cached: 是否命中补全缓存（10分钟内不重复补全）
+    """
+    if not is_wxmap_mounted():
+        return {
+            "mounted": False,
+            "processed_days": 0,
+            "stored_hours": 0,
+            "cached": False,
+            "message": "天气图挂载盘未挂载，仅显示已入库数据",
+        }
+
+    key = (year, month)
+    now_ts = datetime.utcnow().timestamp()
+    with _backfill_lock:
+        last = _BACKFILL_CACHE.get(key, 0.0)
+        if now_ts - last < _BACKFILL_CACHE_TTL:
+            return {
+                "mounted": True,
+                "processed_days": 0,
+                "stored_hours": 0,
+                "cached": True,
+                "message": "该月数据刚刚已补全",
+            }
+        _BACKFILL_CACHE[key] = now_ts
+
+        # UTC 月对应的北京时日期范围（含边界）：YYYY-MM-01 ～ YYYY-(MM+1)-01
+        if month == 12:
+            next_first = datetime(year + 1, 1, 1)
+        else:
+            next_first = datetime(year, month + 1, 1)
+        start_bj = datetime(year, month, 1) + timedelta(hours=8)
+        end_bj = next_first + timedelta(hours=8)
+
+        processed_days = 0
+        stored_hours = 0
+        d = start_bj
+        while d <= end_bj:
+            mmdd = f"{d.month:02d}{d.day:02d}"
+            if _safe_is_dir(WXMAP_DIR / mmdd):
+                stored = process_and_store_day(db, mmdd)
+                if stored > 0:
+                    stored_hours += stored
+                    logger.info("云量补全 %s: %d 小时", mmdd, stored)
+                processed_days += 1
+            d += timedelta(days=1)
+
+        logger.info("云量补全 %04d-%02d 完成: %d 天目录, %d 小时",
+                    year, month, processed_days, stored_hours)
+        return {
+            "mounted": True,
+            "processed_days": processed_days,
+            "stored_hours": stored_hours,
+            "cached": False,
+            "message": f"补全完成：{processed_days} 天目录，{stored_hours} 小时数据",
+        }

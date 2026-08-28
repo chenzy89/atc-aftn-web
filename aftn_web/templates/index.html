@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.34</title>
+<title>ATC综合数据中心 v2.2.35</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.34</span>
+  <span class="badge">v2.2.35</span>
 </div>
 
 <div class="tabs">
@@ -951,11 +951,12 @@ canvas#radarMap {
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;max-width:1000px;width:94%;max-height:90vh;display:flex;flex-direction:column;padding:20px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-shrink:0;">
       <h2 style="font-size:16px;font-weight:600;">☁ 云量月视图</h2>
+      <div id="cloudMonthStatus" style="flex:1;margin:0 12px;font-size:12px;color:var(--text-muted);text-align:center;"></div>
       <div style="display:flex;align-items:center;gap:8px;">
         <span style="font-size:12px;color:var(--text-muted);">选择年月</span>
-        <select id="cloudMonthYear" onchange="cloudMonthLoad()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px;"></select>
+        <select id="cloudMonthYear" onchange="cloudMonthBackfillAndLoad()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px;"></select>
         <span style="font-size:12px;color:var(--text-muted);">年</span>
-        <select id="cloudMonthSel" onchange="cloudMonthLoad()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px;"></select>
+        <select id="cloudMonthSel" onchange="cloudMonthBackfillAndLoad()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px;"></select>
         <span style="font-size:12px;color:var(--text-muted);">月</span>
         <button onclick="closeCloudMonthModal()" style="background:none;border:none;color:var(--text-muted);font-size:22px;cursor:pointer;line-height:1;margin-left:8px;">&times;</button>
       </div>
@@ -5659,11 +5660,52 @@ function openCloudMonthModal(year, month) {
     moSel.appendChild(opt);
   }
 
-  cloudMonthLoad();
+  cloudMonthBackfillAndLoad();
 }
 
 function closeCloudMonthModal() {
   document.getElementById('modal-cloud-month').style.display = 'none';
+}
+
+// 打开/切换年月：先检查天气图挂载盘，若已挂载则补全缺失云图，再加载月视图
+function cloudMonthBackfillAndLoad() {
+  var yrSel = document.getElementById('cloudMonthYear');
+  var moSel = document.getElementById('cloudMonthSel');
+  if (!yrSel || !moSel) return;
+  var year = parseInt(yrSel.value);
+  var month = parseInt(moSel.value);
+
+  var loading = document.getElementById('cloudMonthLoading');
+  var status = document.getElementById('cloudMonthStatus');
+  if (status) status.textContent = '⏳ 检查天气图挂载盘...';
+  if (loading) loading.style.display = 'flex';
+
+  fetch('/api/cloud-cover/backfill?year=' + year + '&month=' + month)
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      if (status && res) {
+        if (res.mounted === false) {
+          status.textContent = '⚠ 天气图挂载盘未挂载，仅显示已入库数据';
+        } else if (res.stored_hours > 0) {
+          status.textContent = '✅ 挂载盘已挂载，自动补全 ' + res.stored_hours + ' 小时云图数据';
+        } else if (res.cached) {
+          status.textContent = '✅ 挂载盘已挂载，该月数据刚刚已补全';
+        } else if (res.mounted === true) {
+          status.textContent = '✅ 挂载盘已挂载，数据已是最新';
+        }
+      }
+      return fetch('/api/cloud-cover/monthly?year=' + year + '&month=' + month);
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (loading) loading.style.display = 'none';
+      _cloudMonthData = data;
+      cloudMonthDraw();
+    })
+    .catch(function() {
+      if (loading) loading.style.display = 'none';
+      if (status) status.textContent = '⚠ 云图数据加载失败';
+    });
 }
 
 function cloudMonthLoad() {

@@ -1112,6 +1112,22 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         }
         return jsonify(result)
 
+    @app.route("/api/cloud-cover/backfill")
+    def api_cloud_cover_backfill():
+        """检查天气图挂载盘是否挂载；若已挂载则补全指定年月的云量数据"""
+        now_utc = datetime.utcnow()
+        try:
+            year = int(request.args.get("year", now_utc.year))
+            month = int(request.args.get("month", now_utc.month))
+        except (ValueError, TypeError):
+            return jsonify({"error": "invalid year/month"}), 400
+        if month < 1 or month > 12:
+            return jsonify({"error": "month out of range"}), 400
+        from .wx_cloud import backfill_month
+        result = backfill_month(db, year, month)
+        result.update({"year": year, "month": month})
+        return jsonify(result)
+
     @app.route("/api/weather/cloud-cover")
     def api_weather_cloud_cover():
         """兼容旧版"""
