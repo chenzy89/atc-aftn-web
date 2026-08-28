@@ -502,9 +502,10 @@ class VoiceReceiver:
         """构建扇区通话活动映射
 
         返回 {terminal_code: [144 bool]}，True 表示该 slot 有通话
-        基于 voice_duration 来判断：duration > 0 = 有通话
+        基于 ASR 识别数据 duration 判断：duration > 0 = 有通话
+        （语音通道发射端不稳定，改用 ASR 数据判断扇区开放/关闭）
 
-        注意：如果某个扇区在该日期没有任何语音数据（从未录制过），
+        注意：如果所有扇区在该日期都没有任何 ASR 数据（无法判断），
         所有 slot 返回 True（视为活跃，避免误判为扇区关闭）
         """
         result: dict[str, list[bool]] = {}
@@ -512,7 +513,11 @@ class VoiceReceiver:
         durations_by_code: dict[str, list[float]] = {}
 
         for ch_id, sector_code in CHANNEL_SECTORS.items():
-            durations = self.get_channel_duration(date_str, ch_id)
+            short = SECTOR_CODE_TO_SHORT.get(sector_code, "")
+            if short and self._db is not None:
+                durations = self._db.get_asr_duration_10min(date_str, short)
+            else:
+                durations = self.get_channel_duration(date_str, ch_id)
             durations_by_code[sector_code] = durations
             if any(d > 0 for d in durations):
                 has_any_data = True
