@@ -1,7 +1,8 @@
 China	true
 BORDER	true
 OBST	false
-MC_A_16	true
+MC_A_16	false
+MC_D_34LKC	true
 SD_A_23	false
 SD_A_05	true
 BACKGROUND	false
@@ -15,4 +16,6 @@ SZ_A_16L	false
 SZ_A_15	false
 SZ_A_16R	false
 MSAW false
-CUSTOM_AREA true
+ArrRoute	false
+DepRoute	false
+WorldMap	false

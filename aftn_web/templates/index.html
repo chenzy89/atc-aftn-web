@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.33</title>
+<title>ATC综合数据中心 v2.2.34</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.33</span>
+  <span class="badge">v2.2.34</span>
 </div>
 
 <div class="tabs">
@@ -529,7 +529,8 @@ canvas#radarMap {
       <label><span>航班号</span><input id="qfc" placeholder="CSN101"></label>
       <label><span>起飞地</span><input id="qfa" placeholder="ZGOW" maxlength="4"></label>
       <label><span>目的地</span><input id="qfd" placeholder="ZGGG" maxlength="4"></label>
-      <label><span>DOF</span><input id="qfd2" type="date"></label>
+      <label><span>DOF起</span><input id="qfd_from" type="date"></label>
+      <label><span>DOF止</span><input id="qfd_to" type="date"></label>
       <label><span>关注机场</span>
         <select id="qair">
           <option value="">全部</option>
@@ -571,6 +572,7 @@ canvas#radarMap {
           <option value="TOMUD">TOMUD</option>
           <option value="INDUS">INDUS</option>
           <option value="SULAS">SULAS</option>
+          <option value="TAMOT">TAMOT</option>
           <option value="P50">P50</option>
           <option value="__OTHER__">其它</option>
         </select>
@@ -1336,7 +1338,8 @@ function searchPlans(r) {
   if (c) { p.set('callsign', c); }
   if (a) { p.set('adep', a); }
   if (v('qfd')) { p.set('adest', v('qfd')); }
-  if (v('qfd2')) { p.set('dof', v('qfd2')); }
+  if (v('qfd_from')) { p.set('dof_from', v('qfd_from')); }
+  if (v('qfd_to')) { p.set('dof_to', v('qfd_to')); }
   if (air) { p.set('airport', air); }
   if (fr) { p.set('route', fr); }
   if (fr2) { p.set('flight_rule', fr2); }
@@ -1442,8 +1445,9 @@ function exportExcel() {
   var c = v('qfc'); var a = v('qfa'); var s = v('qfs'); var ac = v('qfac'); var fr2 = v('qfr2'); var hp = v('qhp');
   if (c) { params.set('callsign', c); }
   if (a) { params.set('adep', a); }
-  if (v('qfd')) { params.set('dof', v('qfd')); }
-  if (v('qfd2')) { params.set('dof', v('qfd2')); }
+  if (v('qfd')) { params.set('adest', v('qfd')); }
+  if (v('qfd_from')) { params.set('dof_from', v('qfd_from')); }
+  if (v('qfd_to')) { params.set('dof_to', v('qfd_to')); }
   if (s) { params.set('ssr', s); }
   if (ac) { params.set('aircraft_type', ac); }
   if (fr2) { params.set('flight_rule', fr2); }
@@ -2075,14 +2079,12 @@ function esc(s) {
           ctx.closePath();
           ctx.fill();
         } else if (st === 107) {
-          // 直升机场 - 圆+十字
+          // 直升机场 - 圆+H
           ctx.beginPath();
-          ctx.arc(ix, iy, 12, 0, Math.PI*2);
+          ctx.arc(ix, iy, 6, 0, Math.PI*2);
           ctx.stroke();
-          ctx.beginPath();
-          ctx.moveTo(ix-12, iy); ctx.lineTo(ix+12, iy);
-          ctx.moveTo(ix, iy-12); ctx.lineTo(ix, iy+12);
-          ctx.stroke();
+          ctx.font = '11px "Microsoft YaHei", "PingFang SC", sans-serif';
+          ctx.fillText('H',ix-4,iy+6)
         } else if (st === 105) {
           // 圆+中心点
           ctx.beginPath(); ctx.arc(ix, iy, 8, 0, Math.PI*2); ctx.stroke();
@@ -3522,12 +3524,13 @@ function esc(s) {
     // 从当前搜索条件重新拉取全部飞行计划（不分页），确保拿到所有呼号
     var fpParams = new URLSearchParams({limit: 10000, offset: 0});
     var v = function(id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; };
-    var c = v('qfc'); var a = v('qfa'); var d = v('qfd'); var d2 = v('qfd2');
+    var c = v('qfc'); var a = v('qfa'); var d = v('qfd');
     var air = v('qair'); var fr = v('qfr'); var fr2 = v('qfr2'); var hp = v('qhp');
     if (c) { fpParams.set('callsign', c); }
     if (a) { fpParams.set('adep', a); }
     if (d) { fpParams.set('adest', d); }
-    if (d2) { fpParams.set('dof', d2); }
+    if (v('qfd_from')) { fpParams.set('dof_from', v('qfd_from')); }
+    if (v('qfd_to')) { fpParams.set('dof_to', v('qfd_to')); }
     if (air) { fpParams.set('airport', air); }
     if (fr) { fpParams.set('route', fr); }
     if (fr2) { fpParams.set('flight_rule', fr2); }

@@ -1873,6 +1873,8 @@ class Database:
         adep: str | None = None,
         adest: str | None = None,
         dof: date | None = None,
+        dof_from: date | None = None,
+        dof_to: date | None = None,
         airport: str | None = None,  # 关注机场：adep OR adest 匹配
         route: str | None = None,  # 航路关键词
         source_message_type: str | None = None,
@@ -1886,6 +1888,7 @@ class Database:
         conn = self._get_conn()
         params, conditions = _build_fpl_conditions(
             callsign=callsign, adep=adep, adest=adest, dof=dof,
+            dof_from=dof_from, dof_to=dof_to,
             airport=airport, route=route,
             source_message_type=source_message_type,
             flight_rule=flight_rule, handover_pt=handover_pt,
@@ -1917,6 +1920,8 @@ class Database:
         adep: str | None = None,
         adest: str | None = None,
         dof: date | None = None,
+        dof_from: date | None = None,
+        dof_to: date | None = None,
         airport: str | None = None,
         route: str | None = None,
         source_message_type: str | None = None,
@@ -1926,6 +1931,7 @@ class Database:
         conn = self._get_conn()
         params, conditions = _build_fpl_conditions(
             callsign=callsign, adep=adep, adest=adest, dof=dof,
+            dof_from=dof_from, dof_to=dof_to,
             airport=airport, route=route,
             source_message_type=source_message_type,
             flight_rule=flight_rule, handover_pt=handover_pt,
@@ -2289,6 +2295,8 @@ def _build_fpl_conditions(
     adep: str | None = None,
     adest: str | None = None,
     dof: date | None = None,
+    dof_from: date | None = None,
+    dof_to: date | None = None,
     airport: str | None = None,
     route: str | None = None,
     source_message_type: str | None = None,
@@ -2310,6 +2318,12 @@ def _build_fpl_conditions(
     if dof:
         conditions.append("dof = ?")
         params.append(_fmt_date(dof))
+    if dof_from:
+        conditions.append("dof >= ?")
+        params.append(_fmt_date(dof_from))
+    if dof_to:
+        conditions.append("dof <= ?")
+        params.append(_fmt_date(dof_to))
     if airport:
         conditions.append("(adep LIKE ? OR adest LIKE ?)")
         p = f"%{airport.upper()}%"
