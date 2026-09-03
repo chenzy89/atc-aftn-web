@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.40</title>
+<title>ATC综合数据中心 v2.2.41</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.40</span>
+  <span class="badge">v2.2.41</span>
 </div>
 
 <div class="tabs">
@@ -4804,6 +4804,9 @@ function voiceRenderChannels(channels, playing) {
     var savedStr = c.bytes_saved > 1024
       ? (c.bytes_saved / 1024 / 1024).toFixed(1) + ' MB'
       : (c.bytes_saved / 1024).toFixed(1) + ' KB';
+    // 频率展示：CSV 里可能已带/不带 MHz 单位，统一显示为 'xxx MHz'
+    var freqStr = c.frequency ? String(c.frequency).trim() : '';
+    if (freqStr && !/mhz$/i.test(freqStr)) freqStr += ' MHz';
     html += '<div class="voice-channel-card ' + selClass + '" onclick="voiceSelectFromCard(' + c.channel_id + ')">'
       + '<div class="vc-top">'
       + '  <div><div class="vc-name">' + c.sector_code + '</div>'
@@ -4811,7 +4814,7 @@ function voiceRenderChannels(channels, playing) {
       + '  </div>'
       + '  <div class="vc-dot ' + dotClass + '" title="' + dotTitle + '"></div>'
       + '</div>'
-      + '<div class="vc-freq">' + c.frequency + ' MHz</div>'
+      + '<div class="vc-freq">' + (freqStr || '—') + '</div>'
       + '<div class="vc-ch">' + (c.channel_label || ('内话通道 #' + c.channel_id)) + '</div>'
       + '<div class="vc-wave-wrap"><canvas class="vc-wave" data-channel-id="' + c.channel_id + '"></canvas></div>'
       + '<div class="vc-en-stats">E:' + (c.vad_energy || 0).toFixed(3) + '</div>'

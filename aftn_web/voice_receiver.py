@@ -7,6 +7,7 @@ import csv
 import logging
 import math
 import os
+import re
 import socket
 import struct
 import sys
@@ -358,7 +359,7 @@ class ADPCMDecoder:
 
 
 def _get_frequency(sector_code: str) -> str:
-    """从 SectorInfo 配置获取频率"""
+    """从 SectorInfo 配置获取频率（兜底，正常走 CSV 频率列）"""
     freqs = {
         "ZGJDTM01": "120.35",
         "ZGJDTM02": "121.4",
@@ -369,6 +370,14 @@ def _get_frequency(sector_code: str) -> str:
         "ZGJDTM07": "127.95",
     }
     return freqs.get(sector_code, "")
+
+
+def _normalize_frequency(freq: str) -> str:
+    """频率统一成 'xxx.xx MHz' 格式（CSV 里可能写 120.35 或 120.35 MHz）"""
+    freq = (freq or "").strip()
+    if freq and not re.search(r"mhz", freq, re.IGNORECASE):
+        freq += " MHz"
+    return freq
 
 
 def _get_sector_name(sector_code: str) -> str:
@@ -449,7 +458,7 @@ class VoiceReceiver:
                 channel_id=ec_ch,
                 channel_type="飞坤EC",
                 default_channel=ec_ch,
-                frequency=str(cfg.get("frequency") or _get_frequency(sector_code)),
+                frequency=_normalize_frequency(str(cfg.get("frequency") or _get_frequency(sector_code))),
                 sector_name=str(cfg.get("alias") or _get_sector_name(sector_code)),
             )
 
