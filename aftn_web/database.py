@@ -1166,13 +1166,16 @@ class Database:
     def query_merged_sector_traffic(
         self, date_from: str, date_to: str,
         merge_parent_map: dict[str, str],
-        sector_channels: dict[str, int],
+        sector_channels: dict[str, list[int]],
         sector_codes: list[str],
     ) -> dict[str, list[int]]:
         """查询考虑扇区合并的24小时架次分布（UTC）
 
         使用 sector_callsigns_10min（UTC）+ voice_duration（UTC）直接计算，
         不依赖北京时的 sector_flights 表。
+
+        sector_channels: {终端代码: [通道号, ...]} — 一个扇区可对应多个内话
+        通道（飞坤EC/飞坤PLC/RS），任一通道有语音即视为该扇区有通话。
 
         规则：
         - 扇区某10分钟slot无通话且该扇区有父扇区 → 该slot架次归0（归入父扇区）
@@ -1212,8 +1215,11 @@ class Database:
                     c: [False] * 144 for c in sector_codes
                 }
                 has_any_voice = False
-                for code, ch_id in sector_channels.items():
-                    durations = self.load_voice_durations(date_str, ch_id)
+                for code, ch_ids in sector_channels.items():
+                    durations = [0.0] * 144
+                    for ch_id in ch_ids:
+                        ch_dur = self.load_voice_durations(date_str, ch_id)
+                        durations = [a + b for a, b in zip(durations, ch_dur)]
                     for s in range(144):
                         if durations[s] > 0:
                             sector_active_slot[code][s] = True
@@ -1291,8 +1297,11 @@ class Database:
                     c: [False] * 144 for c in sector_codes
                 }
                 has_any_voice = False
-                for code, ch_id in sector_channels.items():
-                    durations = self.load_voice_durations(date_str, ch_id)
+                for code, ch_ids in sector_channels.items():
+                    durations = [0.0] * 144
+                    for ch_id in ch_ids:
+                        ch_dur = self.load_voice_durations(date_str, ch_id)
+                        durations = [a + b for a, b in zip(durations, ch_dur)]
                     for s in range(144):
                         if durations[s] > 0:
                             sector_active_slot[code][s] = True

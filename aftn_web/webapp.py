@@ -23,7 +23,7 @@ logger = logging.getLogger("aftn_web.webapp")
 
 from .radar_history import RadarHistoryStore
 from .asr_receiver import AsrReceiver
-from .voice_receiver import VoiceReceiver, SECTOR_CHANNELS, SECTOR_MERGE_RULES
+from .voice_receiver import VoiceReceiver, SECTOR_CHANNELS, SECTOR_ALL_CHANNELS, SECTOR_MERGE_RULES
 
 def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = None, radar_history_store: RadarHistoryStore | None = None, voice_receiver: VoiceReceiver | None = None, asr_receiver: AsrReceiver | None = None) -> Flask:
     _RADAR_MAP_VERSION = "v0.1"
@@ -381,7 +381,7 @@ def create_app(config: AppConfig, db: Database, fdr_store: FDRStore | None = Non
         result = db.query_traffic_statistics(airports, date_from, date_to)
         sector_codes = sorted(SECTOR_CHANNELS.keys())
         result["sector_traffic"] = db.query_merged_sector_traffic(
-            date_from, date_to, SECTOR_MERGE_RULES, SECTOR_CHANNELS, sector_codes,
+            date_from, date_to, SECTOR_MERGE_RULES, SECTOR_ALL_CHANNELS, sector_codes,
         )
         return jsonify(result)
 

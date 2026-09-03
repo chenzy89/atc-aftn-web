@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.38</title>
+<title>ATC综合数据中心 v2.2.39</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.38</span>
+  <span class="badge">v2.2.39</span>
 </div>
 
 <div class="tabs">
@@ -4814,7 +4814,7 @@ function voiceRenderChannels(channels, playing) {
       + '  <div class="vc-dot ' + dotClass + '" title="' + dotTitle + '"></div>'
       + '</div>'
       + '<div class="vc-freq">' + c.frequency + ' MHz</div>'
-      + '<div class="vc-ch">内话通道 #' + c.channel_id + '</div>'
+      + '<div class="vc-ch">' + (c.channel_label || ('内话通道 #' + c.channel_id)) + '</div>'
       + '<div class="vc-wave-wrap"><canvas class="vc-wave" data-channel-id="' + c.channel_id + '"></canvas></div>'
       + '<div class="vc-en-stats">E:' + (c.vad_energy || 0).toFixed(3) + '</div>'
       + (c.asr_text && (Date.now() - (_asrLastSeen[c.channel_id] || 0) <= 10000)
@@ -4924,14 +4924,18 @@ function voiceSyncChartSelect(channels, chartIdx) {
   var doUpdate = function(sel) {
     if (!sel) return;
     var currentVal = sel.value;
-    sel.innerHTML = '<option value="-1">— 选择通道 —</option>';
+    sel.innerHTML = '<option value="-1">— 选择扇区 —</option>';
+    // 扇区选项用固定的默认通道号（飞坤EC）作 value，保证扇区负荷查询稳定；
+    // 文案里显示当前轮询到的内话通道（如 飞坤EC通道#38）
     for (var oi = 0; oi < order.length; oi++) {
       for (var ci = 0; ci < channels.length; ci++) {
         if (channels[ci].sector_code === order[oi]) {
           var opt = document.createElement('option');
-          opt.value = channels[ci].channel_id;
-          opt.textContent = order[oi] + ' (' + channels[ci].sector_name + ') CH' + channels[ci].channel_id;
-          if (String(channels[ci].channel_id) === currentVal) opt.selected = true;
+          opt.value = (channels[ci].default_channel !== undefined && channels[ci].default_channel !== null)
+            ? channels[ci].default_channel : channels[ci].channel_id;
+          opt.textContent = order[oi] + ' (' + channels[ci].sector_name + ') '
+            + (channels[ci].channel_label || ('内话通道 #' + channels[ci].channel_id));
+          if (String(opt.value) === String(currentVal)) opt.selected = true;
           sel.appendChild(opt);
           break;
         }
@@ -5028,8 +5032,18 @@ function voiceSelectFromCard(channelId) {
     var d = new Date();
     dateInput.value = d.getUTCFullYear() + '-' + _zp(d.getUTCMonth()+1) + '-' + _zp(d.getUTCDate());
   }
+  // 图表选中的是扇区的默认通道号（飞坤EC，固定），播放用的是当前内话通道
+  var defCh = channelId;
+  var chs = window._lastChannels || [];
+  for (var i = 0; i < chs.length; i++) {
+    if (String(chs[i].channel_id) === String(channelId)) {
+      defCh = (chs[i].default_channel !== undefined && chs[i].default_channel !== null)
+        ? chs[i].default_channel : channelId;
+      break;
+    }
+  }
   var sel = document.getElementById('voiceChartChannel_0');
-  if (sel) sel.value = channelId;
+  if (sel) sel.value = defCh;
 
   // 如果已经是当前通道，停止播放（toggle）
   if (_voiceAudioChannel === channelId) {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import logging
 import math
 import os
@@ -43,19 +44,110 @@ T_INDEX = [
 ]
 BLOCK_SIZE = 256
 
-# 扇区 → 内话通道号映射
-SECTOR_CHANNELS: dict[str, int] = {
-    "ZGJDTM01": 38,
-    "ZGJDTM02": 42,
-    "ZGJDTM03": 50,
-    "ZGJDTM04": 264,
-    "ZGJDTM05": 46,
-    "ZGJDTM06": 32,
-    "ZGJDTM07": 54,
+# ═══════════════════════════════════════════════════════════════
+# 扇区 → 内话通道对照表（config/扇区语音通道对照表.csv，启动时读取）
+#
+# CSV 每行: 扇区代码,别名,频率,飞坤EC通道,飞坤PLC通道,RS通道
+# 每个扇区有 3 个内话通道（飞坤EC / 飞坤PLC / RS）。收到语音数据时
+# 可能一个或多个通道有数据，按 飞坤EC → 飞坤PLC → RS 的顺序轮询，
+# 发现某个通道有数据即停，该通道就是该扇区当前的内话通道。
+# ═══════════════════════════════════════════════════════════════
+
+SECTOR_CHANNEL_CSV = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "config", "扇区语音通道对照表.csv",
+)
+
+# 内话通道轮询顺序（优先级从高到低）：类型名 → CSV 列键
+SECTOR_CHANNEL_KINDS: list[tuple[str, str]] = [
+    ("飞坤EC", "ec"),
+    ("飞坤PLC", "plc"),
+    ("RS", "rs"),
+]
+
+# 内置默认对照表（CSV 缺失/损坏时的兜底，与 config 下 CSV 当前内容一致）
+_DEFAULT_SECTOR_CHANNEL_CFG: dict[str, dict] = {
+    "ZGJDTM01": {"ec": 38, "plc": 40, "rs": 104, "alias": "HN", "frequency": "120.35"},
+    "ZGJDTM02": {"ec": 42, "plc": 44, "rs": 106, "alias": "HE", "frequency": "121.4"},
+    "ZGJDTM03": {"ec": 50, "plc": 52, "rs": 110, "alias": "ARW", "frequency": "119.9"},
+    "ZGJDTM04": {"ec": 36, "plc": 34, "rs": 102, "alias": "AS", "frequency": "123.85"},
+    "ZGJDTM05": {"ec": 46, "plc": 48, "rs": 108, "alias": "AD", "frequency": "119.55"},
+    "ZGJDTM06": {"ec": 32, "plc": 30, "rs": 100, "alias": "ASL", "frequency": "119.025"},
+    "ZGJDTM07": {"ec": 54, "plc": 56, "rs": 112, "alias": "ARE/AA", "frequency": "127.95"},
 }
 
-# 通道号 → 扇区名
-CHANNEL_SECTORS: dict[int, str] = {v: k for k, v in SECTOR_CHANNELS.items()}
+
+def load_sector_channel_config() -> dict[str, dict]:
+    """启动时读取 config/扇区语音通道对照表.csv
+
+    返回 {扇区代码: {"ec": int, "plc": int, "rs": int,
+                    "alias": str, "frequency": str}}
+    文件不存在或解析失败时回退内置默认表（不阻断启动）。
+    """
+    cfg = {code: dict(v) for code, v in _DEFAULT_SECTOR_CHANNEL_CFG.items()}
+    try:
+        with open(SECTOR_CHANNEL_CSV, "r", encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                code = (row.get("扇区代码") or "").strip().upper()
+                if not code:
+                    continue
+                try:
+                    entry = {
+                        "ec": int(row.get("飞坤EC通道") or 0),
+                        "plc": int(row.get("飞坤PLC通道") or 0),
+                        "rs": int(row.get("RS通道") or 0),
+                        "alias": (row.get("别名") or "").strip(),
+                        "frequency": (row.get("频率") or "").strip(),
+                    }
+                except (TypeError, ValueError):
+                    logger.warning("扇区语音通道对照表 行解析失败: %r", dict(row))
+                    continue
+                cfg[code] = entry
+        logger.info(
+            "已从 %s 加载扇区内话通道对照表: %d 个扇区",
+            SECTOR_CHANNEL_CSV, len(cfg),
+        )
+    except FileNotFoundError:
+        logger.warning("扇区语音通道对照表不存在(%s)，使用内置默认表", SECTOR_CHANNEL_CSV)
+    except Exception:
+        logger.exception("读取扇区语音通道对照表失败，使用内置默认表")
+    return cfg
+
+
+# 模块导入时读取一次（程序启动时）
+SECTOR_CHANNEL_CONFIG: dict[str, dict] = load_sector_channel_config()
+
+# 全部被监控的内话通道号（每扇区 EC/PLC/RS 共 3 个）
+ALL_MONITORED_CHANNELS: list[int] = sorted(
+    {
+        int(ch)
+        for cfg in SECTOR_CHANNEL_CONFIG.values()
+        for _, key in SECTOR_CHANNEL_KINDS
+        for ch in [cfg.get(key, 0)]
+        if int(ch or 0) > 0
+    }
+)
+
+# 兼容旧接口：扇区 → 默认通道号（取飞坤EC，作为代表通道）
+SECTOR_CHANNELS: dict[str, int] = {
+    code: int(cfg["ec"]) for code, cfg in SECTOR_CHANNEL_CONFIG.items()
+}
+
+# 通道号 → 扇区名（覆盖全部 EC/PLC/RS 通道，按实际收包通道反查）
+CHANNEL_SECTORS: dict[int, str] = {}
+for _code, _cfg in SECTOR_CHANNEL_CONFIG.items():
+    for _kind, _key in SECTOR_CHANNEL_KINDS:
+        _cid = int(_cfg.get(_key, 0) or 0)
+        if _cid > 0:
+            CHANNEL_SECTORS[_cid] = _code
+
+# 通道号 → 内话通道类型名（"飞坤EC" / "飞坤PLC" / "RS"）
+CHANNEL_KINDS: dict[int, str] = {}
+for _code, _cfg in SECTOR_CHANNEL_CONFIG.items():
+    for _kind, _key in SECTOR_CHANNEL_KINDS:
+        _cid = int(_cfg.get(_key, 0) or 0)
+        if _cid > 0:
+            CHANNEL_KINDS[_cid] = _kind
 
 # 终端代码 → 短扇区名
 SECTOR_CODE_TO_SHORT: dict[str, str] = {
@@ -82,6 +174,12 @@ SECTOR_MERGE_RULES: dict[str, str] = {
 # 终端代码 → 内话通道号（反向查找）
 CODE_TO_CHANNEL: dict[str, int] = {v: k for k, v in SECTOR_CHANNELS.items()}
 
+# 扇区 → 全部内话通道号列表（[飞坤EC, 飞坤PLC, RS]，统计合并用）
+SECTOR_ALL_CHANNELS: dict[str, list[int]] = {
+    code: [int(cfg[key]) for _, key in SECTOR_CHANNEL_KINDS if int(cfg.get(key, 0) or 0) > 0]
+    for code, cfg in SECTOR_CHANNEL_CONFIG.items()
+}
+
 # VAD (语音活动检测) 默认参数
 _VAD_ENERGY_THRESHOLD_DEFAULT = 0.005  # PCM 归一化 RMS 能量阈值，低于此视为静音
 _VAD_SILENCE_MS_DEFAULT = 1000        # 持续静音超过此值视为通话结束 (ms)
@@ -102,11 +200,13 @@ _VAD_FIXED_THRESHOLD_MARGIN = 0.0005
 
 @dataclass
 class ChannelStatus:
-    """单个通道的状态"""
+    """单个扇区的状态（含当前轮询出的内话通道）"""
     sector_code: str           # ZGJDTM01
-    channel_id: int            # 内话通道号 38, 42, …
+    channel_id: int            # 当前内话通道号（轮询结果）
     frequency: str             # 频率如 "120.35"
     sector_name: str           # 扇区名如 HN
+    channel_type: str = ""    # 当前内话通道类型 飞坤EC/飞坤PLC/RS
+    default_channel: int = 0   # 扇区默认（飞坤EC）通道号，固定不变
     last_activity: float = 0.0 # time.monotonic() 最后收到数据时间
     bytes_received: int = 0    # 累计接收字节数
     active: bool = False       # 最近 3 秒是否有数据
@@ -115,10 +215,20 @@ class ChannelStatus:
     vad_noise_floor: float = 0.0  # 当前噪声底噪值
     selected: bool = False     # 是否被选中播放
 
+    @property
+    def channel_label(self) -> str:
+        """形如 飞坤EC通道#38 的展示文案"""
+        if self.channel_type:
+            return "{}通道#{}".format(self.channel_type, self.channel_id)
+        return "内话通道 #{}".format(self.channel_id)
+
     def to_dict(self) -> dict:
         return {
             "sector_code": self.sector_code,
             "channel_id": self.channel_id,
+            "channel_type": self.channel_type,
+            "channel_label": self.channel_label,
+            "default_channel": self.default_channel,
             "frequency": self.frequency,
             "sector_name": self.sector_name,
             "last_activity": self.last_activity,
@@ -292,7 +402,7 @@ class VoiceReceiver:
         multicast_group: str,
         port: int,
         interface_ip: str,
-        sector_channels: dict[str, int] | None = None,
+        sector_channel_config: dict[str, dict] | None = None,
         db: Any = None,
         vad_energy_threshold: float = _VAD_ENERGY_THRESHOLD_DEFAULT,
         vad_silence_ms: int = _VAD_SILENCE_MS_DEFAULT,
@@ -308,15 +418,30 @@ class VoiceReceiver:
         # 每个通道一个解码器（ADPCM 解码有状态）
         self._decoders: dict[int, ADPCMDecoder] = {}
 
-        # 通道状态 — 按扇区代码索引
-        channels = sector_channels or SECTOR_CHANNELS
+        # 扇区 → 3 个内话通道配置（默认用 CSV/模块级配置）
+        self._sector_cfg: dict[str, dict] = dict(
+            sector_channel_config or SECTOR_CHANNEL_CONFIG
+        )
+        # 本实例监控的全部通道号
+        self._all_channels: list[int] = sorted({
+            int(ch)
+            for cfg in self._sector_cfg.values()
+            for _, key in SECTOR_CHANNEL_KINDS
+            for ch in [cfg.get(key, 0)]
+            if int(ch or 0) > 0
+        })
+
+        # 通道状态 — 按扇区代码索引（channel_id 随轮询结果动态更新）
         self._status: dict[str, ChannelStatus] = {}
-        for sector_code, ch_id in channels.items():
+        for sector_code, cfg in self._sector_cfg.items():
+            ec_ch = int(cfg.get("ec", 0) or 0)
             self._status[sector_code] = ChannelStatus(
                 sector_code=sector_code,
-                channel_id=ch_id,
-                frequency=_get_frequency(sector_code),
-                sector_name=_get_sector_name(sector_code),
+                channel_id=ec_ch,
+                channel_type="飞坤EC",
+                default_channel=ec_ch,
+                frequency=str(cfg.get("frequency") or _get_frequency(sector_code)),
+                sector_name=str(cfg.get("alias") or _get_sector_name(sector_code)),
             )
 
         # 被选中的播放通道 (None = 不播放)
@@ -435,11 +560,39 @@ class VoiceReceiver:
     # ── 公共状态查询 ──────────────────────────────────────
 
     def get_status(self) -> list[dict]:
-        """返回所有通道的状态列表"""
+        """返回所有扇区的状态列表
+
+        每个扇区按 飞坤EC → 飞坤PLC → RS 顺序轮询，取第一个
+        3 秒内有数据的通道作为当前内话通道；都无数据时默认显示
+        飞坤EC 通道。卡片据此显示如 "飞坤EC通道#38"。
+        """
         now = time.monotonic()
         result = []
         for sector_code, st in self._status.items():
-            ch_id = st.channel_id
+            cfg = self._sector_cfg.get(sector_code, {})
+
+            # ── 内话通道轮询：飞坤EC → 飞坤PLC → RS，首个有数据的胜出 ──
+            active_ch_id = 0
+            active_ch_kind = ""
+            for kind, key in SECTOR_CHANNEL_KINDS:
+                cid = int(cfg.get(key, 0) or 0)
+                if cid <= 0:
+                    continue
+                recent = [t for t in self._activity_window.get(cid, []) if now - t < 3.0]
+                self._activity_window[cid] = recent
+                if recent:
+                    active_ch_id, active_ch_kind = cid, kind
+                    break
+
+            if active_ch_id <= 0:
+                # 三个通道都无数据 → 默认显示飞坤EC 通道
+                active_ch_id = st.default_channel or int(cfg.get("ec", 0) or 0)
+                active_ch_kind = "飞坤EC"
+
+            ch_id = active_ch_id
+            st.channel_id = ch_id
+            st.channel_type = active_ch_kind
+
             # 更新 active 状态：3 秒内有数据就标记为活跃
             recent = self._activity_window.get(ch_id, [])
             recent = [t for t in recent if now - t < 3.0]
@@ -462,7 +615,6 @@ class VoiceReceiver:
                 last_sample += 1.0
             self._vad_energy_history_last_sample[ch_id] = last_sample
 
-
             d = st.to_dict()
             d["energy_history"] = list(self._vad_energy_history.get(ch_id, []))
             result.append(d)
@@ -484,11 +636,11 @@ class VoiceReceiver:
             if day_data is not None:
                 return day_data.get(channel_id, [0.0] * 144)
 
-        # 内存中没有，从 DB 加载
+        # 内存中没有，从 DB 加载（加载本实例监控的全部通道）
         if self._db is not None:
             try:
                 loaded: dict[int, list[float]] = {}
-                for ch in SECTOR_CHANNELS.values():
+                for ch in self._all_channels:
                     loaded[ch] = self._db.load_voice_durations(date_str, ch)
                 with self._duration_lock:
                     self._duration_buckets[date_str] = loaded
@@ -512,12 +664,19 @@ class VoiceReceiver:
         has_any_data = False
         durations_by_code: dict[str, list[float]] = {}
 
-        for ch_id, sector_code in CHANNEL_SECTORS.items():
+        # 按扇区处理（每扇区 EC/PLC/RS 三通道数据视为同一扇区）
+        for sector_code, cfg in self._sector_cfg.items():
             short = SECTOR_CODE_TO_SHORT.get(sector_code, "")
             if short and self._db is not None:
                 durations = self._db.get_asr_duration_10min(date_str, short)
             else:
-                durations = self.get_channel_duration(date_str, ch_id)
+                # 兜底：该扇区全部内话通道时长相加
+                durations = [0.0] * 144
+                for _, key in SECTOR_CHANNEL_KINDS:
+                    cid = int(cfg.get(key, 0) or 0)
+                    if cid > 0:
+                        ch_dur = self.get_channel_duration(date_str, cid)
+                        durations = [a + b for a, b in zip(durations, ch_dur)]
             durations_by_code[sector_code] = durations
             if any(d > 0 for d in durations):
                 has_any_data = True
@@ -536,7 +695,7 @@ class VoiceReceiver:
 
     def select_channel(self, channel_id: int) -> bool:
         """选择播放通道。ch 为 -1 表示停止播放。"""
-        valid = list(SECTOR_CHANNELS.values())
+        valid = self._all_channels
         if channel_id != -1 and channel_id not in valid:
             return False
 
@@ -784,7 +943,7 @@ class VoiceReceiver:
             date_key = today
             if date_key not in self._duration_buckets:
                 new_day: dict[int, list[float]] = {}
-                for ch in SECTOR_CHANNELS.values():
+                for ch in self._all_channels:
                     new_day[ch] = [0.0] * 144
                 self._duration_buckets[date_key] = new_day
             day_buckets = self._duration_buckets[date_key]
@@ -885,7 +1044,7 @@ class VoiceReceiver:
         for date_key in (today, yesterday):
             try:
                 day_data: dict[int, list[float]] = {}
-                for ch in SECTOR_CHANNELS.values():
+                for ch in self._all_channels:
                     day_data[ch] = db.load_voice_durations(date_key, ch)
                 with self._duration_lock:
                     self._duration_buckets[date_key] = day_data

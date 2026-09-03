@@ -16,7 +16,7 @@
     },
     "voice": {
       "multicast_group": "238.1.1.1",
-      "port": 5001,
+      "port": 8025,
       "interface_ip": "192.168.15.32",
       "enabled": true
     },
