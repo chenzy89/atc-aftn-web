@@ -82,9 +82,11 @@ def load_sector_channel_config() -> dict[str, dict]:
 
     返回 {扇区代码: {"ec": int, "plc": int, "rs": int,
                     "alias": str, "frequency": str}}
-    文件不存在或解析失败时回退内置默认表（不阻断启动）。
+    - 扇区顺序、内容以 CSV 为准（方便用户自定义：改通道号/别名/频率、增行、调序）
+    - 整份文件缺失/解析失败时才回退内置默认表（不阻断启动）
+    - CSV 未列出的默认扇区补在末尾（防止误删行导致统计/合并代码异常）
     """
-    cfg = {code: dict(v) for code, v in _DEFAULT_SECTOR_CHANNEL_CFG.items()}
+    cfg: dict[str, dict] = {}
     try:
         with open(SECTOR_CHANNEL_CSV, "r", encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader(f):
@@ -92,7 +94,7 @@ def load_sector_channel_config() -> dict[str, dict]:
                 if not code:
                     continue
                 try:
-                    entry = {
+                    cfg[code] = {
                         "ec": int(row.get("飞坤EC通道") or 0),
                         "plc": int(row.get("飞坤PLC通道") or 0),
                         "rs": int(row.get("RS通道") or 0),
@@ -102,15 +104,22 @@ def load_sector_channel_config() -> dict[str, dict]:
                 except (TypeError, ValueError):
                     logger.warning("扇区语音通道对照表 行解析失败: %r", dict(row))
                     continue
-                cfg[code] = entry
-        logger.info(
-            "已从 %s 加载扇区内话通道对照表: %d 个扇区",
-            SECTOR_CHANNEL_CSV, len(cfg),
-        )
+        # 兜底：CSV 未列出的默认扇区仍保留（警告提示）
+        for code, entry in _DEFAULT_SECTOR_CHANNEL_CFG.items():
+            if code not in cfg:
+                cfg[code] = dict(entry)
+                logger.warning("扇区语音通道对照表缺少 %s，已按内置默认补全", code)
+        if cfg:
+            logger.info(
+                "已从 %s 加载扇区内话通道对照表: %d 个扇区",
+                SECTOR_CHANNEL_CSV, len(cfg),
+            )
     except FileNotFoundError:
         logger.warning("扇区语音通道对照表不存在(%s)，使用内置默认表", SECTOR_CHANNEL_CSV)
+        cfg = {code: dict(v) for code, v in _DEFAULT_SECTOR_CHANNEL_CFG.items()}
     except Exception:
         logger.exception("读取扇区语音通道对照表失败，使用内置默认表")
+        cfg = {code: dict(v) for code, v in _DEFAULT_SECTOR_CHANNEL_CFG.items()}
     return cfg
 
 

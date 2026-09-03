@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.39</title>
+<title>ATC综合数据中心 v2.2.40</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.39</span>
+  <span class="badge">v2.2.40</span>
 </div>
 
 <div class="tabs">
@@ -4698,7 +4698,7 @@ var _voiceChartCount = 0;
 var _voiceLocalPlaying = null;  // 本地浏览器正在监听的通道（不共享到服务器）
 var _asrLastSeen = {};  // channel_id → ms timestamp of last ASR text update
 var _asrLastText = {};  // channel_id → last ASR text string
-var _chSectorNames = {'38':'HN (ZGJDTM01)','42':'HE (ZGJDTM02)','50':'ARW (ZGJDTM03)','264':'AS (ZGJDTM04)','46':'AD (ZGJDTM05)','32':'ASL (ZGJDTM06)','54':'ARE/AA (ZGJDTM07)'};
+var _chSectorNames = {};  // 动态填充: 通道号 → '别名 (代号)'（来自 /api/voice/status = CSV）
 var _voiceConfig = null;
 function _zp(n) { return n < 10 ? '0' + n : '' + n; }
 
@@ -4764,16 +4764,8 @@ function voiceRenderChannels(channels, playing) {
   window._lastChannels = channels;
   var container = document.getElementById('voiceChannels');
   if (!container || !channels || !channels.length) return;
-  var order = ['ZGJDTM01','ZGJDTM02','ZGJDTM03','ZGJDTM04','ZGJDTM05','ZGJDTM06','ZGJDTM07'];
-  var sorted = [];
-  for (var oi = 0; oi < order.length; oi++) {
-    for (var ci = 0; ci < channels.length; ci++) {
-      if (channels[ci].sector_code === order[oi]) {
-        sorted.push(channels[ci]);
-        break;
-      }
-    }
-  }
+  // 扇区顺序以服务端返回为准（= CSV 行顺序），不做前端写死排序
+  var sorted = channels;
   // ── 跟踪 ASR 文本更新时间 ──
   for (var si = 0; si < sorted.length; si++) {
     var sc = sorted[si];
@@ -4787,6 +4779,12 @@ function voiceRenderChannels(channels, playing) {
   var html = '';
   for (var i = 0; i < sorted.length; i++) {
     var c = sorted[i];
+    // 通道号(当前内话/默认EC) → '别名 (代号)'，供图表标题等兜底文案用
+    if (c.sector_code && c.sector_name) {
+      var nm = c.sector_name + ' (' + c.sector_code + ')';
+      if (c.default_channel) _chSectorNames[c.default_channel] = nm;
+      _chSectorNames[c.channel_id] = nm;
+    }
     // 单盏三色灯：绿=语音，黄=载波，黑=无数据
     var dotClass = 'inactive';
     var dotTitle = '无数据';
@@ -4920,26 +4918,21 @@ function voiceDrawWaveforms(channels) {
 }
 
 function voiceSyncChartSelect(channels, chartIdx) {
-  var order = ['ZGJDTM01','ZGJDTM02','ZGJDTM03','ZGJDTM04','ZGJDTM05','ZGJDTM06','ZGJDTM07'];
   var doUpdate = function(sel) {
     if (!sel) return;
     var currentVal = sel.value;
     sel.innerHTML = '<option value="-1">— 选择扇区 —</option>';
-    // 扇区选项用固定的默认通道号（飞坤EC）作 value，保证扇区负荷查询稳定；
-    // 文案里显示当前轮询到的内话通道（如 飞坤EC通道#38）
-    for (var oi = 0; oi < order.length; oi++) {
-      for (var ci = 0; ci < channels.length; ci++) {
-        if (channels[ci].sector_code === order[oi]) {
-          var opt = document.createElement('option');
-          opt.value = (channels[ci].default_channel !== undefined && channels[ci].default_channel !== null)
-            ? channels[ci].default_channel : channels[ci].channel_id;
-          opt.textContent = order[oi] + ' (' + channels[ci].sector_name + ') '
-            + (channels[ci].channel_label || ('内话通道 #' + channels[ci].channel_id));
-          if (String(opt.value) === String(currentVal)) opt.selected = true;
-          sel.appendChild(opt);
-          break;
-        }
-      }
+    // 扇区选项按服务端返回顺序（= CSV 行顺序），value 用固定的默认通道号
+    // （飞坤EC），保证扇区负荷查询稳定；文案显示当前轮询到的内话通道
+    for (var ci = 0; ci < channels.length; ci++) {
+      var ch = channels[ci];
+      var opt = document.createElement('option');
+      opt.value = (ch.default_channel !== undefined && ch.default_channel !== null)
+        ? ch.default_channel : ch.channel_id;
+      opt.textContent = ch.sector_code + ' (' + ch.sector_name + ') '
+        + (ch.channel_label || ('内话通道 #' + ch.channel_id));
+      if (String(opt.value) === String(currentVal)) opt.selected = true;
+      sel.appendChild(opt);
     }
   };
   if (chartIdx !== undefined) {
