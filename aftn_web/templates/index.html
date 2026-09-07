@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.42</title>
+<title>ATC综合数据中心 v2.2.43</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.42</span>
+  <span class="badge">v2.2.43</span>
 </div>
 
 <div class="tabs">
@@ -3795,7 +3795,7 @@ function esc(s) {
     return {type: 'fix', lat: rp.lat, lon: rp.lon};
   }
 
-  // 取锚点当前经纬度：航迹锚点跟随最新航迹位置（找不到时保持最后已知位置）
+  // 取锚点当前经纬度：航迹锚点跟随最新航迹位置；航迹信号消失时返回 null（测距线随之消失）
   function resolveAnchor(an) {
     if (!an) return null;
     if (an.type === 'fix') return {lat: an.lat, lon: an.lon};
@@ -3806,11 +3806,11 @@ function esc(s) {
       if (an.callsign && t.callsign && String(t.callsign) === String(an.callsign)) { cur = t; break; }
       if (!cur && an.ssr && t.ssr && String(t.ssr) === String(an.ssr)) cur = t;
     }
-    if (cur) {
-      var la = parseFloat(cur.latitude);
-      var lo = parseFloat(cur.longitude);
-      if (isFinite(la) && isFinite(lo)) { an.lat = la; an.lon = lo; }
-    }
+    if (!cur) return null;   // 锚定航迹已不在雷达数据中
+    var la = parseFloat(cur.latitude);
+    var lo = parseFloat(cur.longitude);
+    if (!isFinite(la) || !isFinite(lo)) return null;   // 坐标无效视为无信号
+    an.lat = la; an.lon = lo;
     return {lat: an.lat, lon: an.lon};
   }
 
@@ -3875,16 +3875,28 @@ function esc(s) {
     ctx.fillText(txt, tx + 3, ty);
   }
 
-  // 绘制全部测距线（固定 + 进行中），drawMap 末尾调用
+  // 绘制全部测距线（固定 + 进行中），drawMap 末尾调用；
+  // 锚定航迹信号消失的测距线在此一并移除（不残留、不复活）
   function drawRulers(ctx, W, H) {
     if (!geo) return;
+    var alive = [];
     for (var i = 0; i < _rulers.length; i++) {
       var r = _rulers[i];
       var ga = resolveAnchor(r.a), gb = resolveAnchor(r.b);
-      if (ga && gb) _paintRuler(ctx, ga, gb, W, H);
+      if (!ga || !gb) continue;   // 失效线：不再绘制，也不保留
+      alive.push(r);
+      _paintRuler(ctx, ga, gb, W, H);
     }
+    _rulers = alive;
     if (_rulerActive && _rulerStart) {
       var gs = resolveAnchor(_rulerStart);
+      if (!gs) {
+        // 进行中起点航迹消失：取消本次测距，光标复位
+        _rulerActive = false;
+        _rulerStart = null;
+        _applyMapCursor(document.getElementById('radarMap'));
+        return;
+      }
       var mp = geo.pixelToReal(_mousePX, _mousePY);
       if (gs && isFinite(mp.lat) && isFinite(mp.lon)) {
         _paintRuler(ctx, gs, {lat: mp.lat, lon: mp.lon}, W, H);
