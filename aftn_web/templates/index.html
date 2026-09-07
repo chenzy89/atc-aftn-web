@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.45</title>
+<title>ATC综合数据中心 v2.2.46</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.45</span>
+  <span class="badge">v2.2.46</span>
 </div>
 
 <div class="tabs">
@@ -2361,6 +2361,7 @@ function esc(s) {
     // ── 航迹标牌 ──
     if (_SHOW_RADAR && window._radarTracks && window._radarTracks.length > 0 && !mapError) {
       _labelRects = [];   // 重建本轮标牌命中区
+      _speedRects = [];   // 重建本轮速度文字命中区
       for (var ti = 0; ti < window._radarTracks.length; ti++) {
         var trk = window._radarTracks[ti];
         var lat = parseFloat(trk.latitude);
@@ -2372,21 +2373,7 @@ function esc(s) {
         // 是否已相关（有起降地）
         var associated = !!(trk.adep && trk.adest);
         // 关注：同时满足机场 AND 扇区
-        var isWatched = false;
-        if (_WATCHED_SECTORS.size > 0) {
-          if (_WATCHED_AIRPORTS.size > 0) {
-            // 有扇区有机场：需同时匹配扇区和机场
-            var matchedAirport = _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest);
-            if (matchedAirport && trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
-              isWatched = true;
-            }
-          } else {
-            // 仅选了扇区未选机场：匹配扇区即可
-            if (trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) {
-              isWatched = true;
-            }
-          }
-        }
+        var isWatched = calcWatched(trk);
         // 未选扇区 → 全部灰色
         var dotColor = isWatched ? '#34d399' : '#64748b';
         var labelColor = isWatched ? '#34d399' : '#94a3b8';
@@ -2423,8 +2410,12 @@ function esc(s) {
           ctx.stroke();
         }
 
-        // ── 1分钟预计线（关注航班常显；选中航迹白色高亮显示） ──
-        if ((isWatched || sel) && trk.heading >= 0 && trk.speed > 0) {
+        // ── 1分钟预计线（关注/选中常显；点击速度文字可手动显隐） ──
+        var tkKey = (trk.callsign || trk.ssr || '').trim();
+        var showPred = (isWatched || sel);
+        if (tkKey && _predForce[tkKey] === true) showPred = true;
+        else if (tkKey && _predForce[tkKey] === false) showPred = false;
+        if (showPred && trk.heading >= 0 && trk.speed > 0) {
           var hdg = parseFloat(trk.heading) * Math.PI / 180;
           var spdKph = parseFloat(trk.speed);
           var distKm = spdKph / 60;  // 1分钟航行距离
@@ -2482,6 +2473,9 @@ function esc(s) {
             ctx.font = '10px Consolas, monospace';
             ctx.fillStyle = altLblColor;
             ctx.fillText(altStr + trendChar + '  ' + spdStr, lx, sp.y + 6);
+            // 速度文字命中区（点击切换该航班预计线显隐）
+            var _spdX0 = lx + ctx.measureText(altStr + trendChar + '  ').width;
+            _speedRects.push({trk: trk, x0: _spdX0 - 2, y0: sp.y - 5, x1: _spdX0 + ctx.measureText(spdStr).width + 2, y1: sp.y + 8});
           }
         }
       }
@@ -3740,7 +3734,9 @@ function esc(s) {
 
   // ── 航迹选中高亮（可多个同时高亮；key=callsign||ssr，逐个点击取消） ──
   var _selectedTracks = {};   // key → true
-  var _labelRects = [];        // 本次 drawMap 各航班号标牌的命中矩形 {trk,x0,y0,x1,y1}
+  var _predForce = {};        // key → true/false：点击速度文字手动开关该航班 1 分钟预计线
+  var _labelRects = [];       // 本次 drawMap 各航班号标牌的命中矩形 {trk,x0,y0,x1,y1}
+  var _speedRects = [];       // 本次 drawMap 各航迹速度文字的命中矩形
 
   // ── 缩放与拖动 + 悬停检测 ──
   var isDragging = false;
@@ -3804,6 +3800,34 @@ function esc(s) {
     if (!_selectedTracks || !trk) return false;
     var key = (trk.callsign || trk.ssr || '').trim();
     return !!key && _selectedTracks[key] === true;
+  }
+
+  // 是否“关注”航班：同时满足所选机场 AND 扇区（与 drawMap 判定一致）
+  function calcWatched(trk) {
+    if (_WATCHED_SECTORS.size > 0) {
+      if (_WATCHED_AIRPORTS.size > 0) {
+        var matchedAirport = _WATCHED_AIRPORTS.has(trk.adep) || _WATCHED_AIRPORTS.has(trk.adest);
+        if (matchedAirport && trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) return true;
+      } else {
+        if (trk.sector_code && _WATCHED_SECTORS.has(trk.sector_code)) return true;
+      }
+    }
+    return false;
+  }
+
+  // 点击命中“速度文字”（返回该航迹；未命中返回 null）—— 用于切换预计线显隐
+  function findSpeedAt(canvas, clientX, clientY) {
+    if (!_speedRects.length || !geo) return null;
+    var rect = canvas.getBoundingClientRect();
+    var sx = geo.screenW / rect.width;
+    var sy = geo.screenH / rect.height;
+    var px = (clientX - rect.left) * sx;
+    var py = (clientY - rect.top) * sy;
+    for (var i = _speedRects.length - 1; i >= 0; i--) {
+      var r = _speedRects[i];
+      if (px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1) return r.trk;
+    }
+    return null;
   }
 
   // 点击命中“航班号标牌文字”（返回该航迹；未命中返回 null）
@@ -4021,8 +4045,21 @@ function esc(s) {
         return;
       }
 
-      // ── 左键：点航班号标牌弹详情；点航迹圆选中/取消高亮；否则长按(或移动)才拖拽地图 ──
+      // ── 左键：速度文字切预计线；航班号弹详情；航迹圆选中/取消高亮；否则长按(或移动)才拖拽地图 ──
       if (e.button !== 0) return;
+      // 速度文字 → 切换该航班 1 分钟预计线显示/隐藏
+      var hitSpd = findSpeedAt(canvas, e.clientX, e.clientY);
+      if (hitSpd) {
+        e.preventDefault();
+        var skey = (hitSpd.callsign || hitSpd.ssr || '').trim();
+        if (skey) {
+          var curShow = _predForce[skey] === true ||
+            (_predForce[skey] === undefined && (calcWatched(hitSpd) || isTrackSelected(hitSpd)));
+          _predForce[skey] = curShow ? false : true;
+          drawMap();
+        }
+        return;
+      }
       // 航班号标牌文字 → 航班详情窗
       var hitLbl = findTrackLabelAt(canvas, e.clientX, e.clientY);
       if (hitLbl) {
