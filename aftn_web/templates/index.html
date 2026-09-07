@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.43</title>
+<title>ATC综合数据中心 v2.2.44</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.43</span>
+  <span class="badge">v2.2.44</span>
 </div>
 
 <div class="tabs">
@@ -2360,6 +2360,7 @@ function esc(s) {
 
     // ── 航迹标牌 ──
     if (_SHOW_RADAR && window._radarTracks && window._radarTracks.length > 0 && !mapError) {
+      _labelRects = [];   // 重建本轮标牌命中区
       for (var ti = 0; ti < window._radarTracks.length; ti++) {
         var trk = window._radarTracks[ti];
         var lat = parseFloat(trk.latitude);
@@ -2389,6 +2390,8 @@ function esc(s) {
         // 未选扇区 → 全部灰色
         var dotColor = isWatched ? '#34d399' : '#64748b';
         var labelColor = isWatched ? '#34d399' : '#94a3b8';
+        // 选中高亮状态（单击航迹圆切换）
+        var sel = isTrackSelected(trk);
 
         // ── 尾迹点 (2px, 透明70%) ──
         var trail = trk.trail;
@@ -2406,15 +2409,22 @@ function esc(s) {
           ctx.globalAlpha = 1.0;
         }
 
-        // ── 实心圆 ──
+        // ── 实心圆（选中：白色 + 外圈） ──
         ctx.beginPath();
         ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = dotColor;
+        ctx.fillStyle = sel ? '#ffffff' : dotColor;
         ctx.setLineDash([]);
         ctx.fill();
+        if (sel) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, 8, 0, Math.PI * 2);
+          ctx.stroke();
+        }
 
-        // ── 1分钟预计线（仅关注机场的航班） ──
-        if (isWatched && trk.heading >= 0 && trk.speed > 0) {
+        // ── 1分钟预计线（关注航班常显；选中航迹白色高亮显示） ──
+        if ((isWatched || sel) && trk.heading >= 0 && trk.speed > 0) {
           var hdg = parseFloat(trk.heading) * Math.PI / 180;
           var spdKph = parseFloat(trk.speed);
           var distKm = spdKph / 60;  // 1分钟航行距离
@@ -2423,8 +2433,8 @@ function esc(s) {
           var dLon = distKm * Math.sin(hdg) / (111.32 * Math.cos(latRad));
           var predPt = geo.realToPixel({lat: lat + dLat, lon: lon + dLon});
           ctx.strokeStyle = '#ffffff';
-          ctx.globalAlpha = 0.4;
-          ctx.lineWidth = 1.2;
+          ctx.globalAlpha = sel ? 0.9 : 0.4;
+          ctx.lineWidth = sel ? 1.6 : 1.2;
           ctx.setLineDash([]);
           ctx.beginPath();
           ctx.moveTo(sp.x, sp.y);
@@ -2443,16 +2453,30 @@ function esc(s) {
 
         // ── 航班号 + 高度标签 ──
         if (_SHOW_RADAR) {
-          var lblColor = isWatched ? '#34d399' : labelColor;
-          var altLblColor = isWatched ? '#34d399' : '#64748b';
+          var lblColor = sel ? '#ffffff' : (isWatched ? '#34d399' : labelColor);
+          var altLblColor = sel ? '#ffffff' : (isWatched ? '#34d399' : '#64748b');
 
-          ctx.fillStyle = lblColor;
           ctx.font = 'bold 11px Consolas, monospace';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'bottom';
           var label = (trk.callsign || trk.ssr || '').trim();
           if (label) {
-            ctx.fillText(label, sp.x + 8, sp.y - 6);
+            // 选中：标牌外移留出引线位，画白色标牌引线
+            var lx = sp.x + (sel ? 22 : 8);
+            if (sel) {
+              ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+              ctx.lineWidth = 1;
+              ctx.setLineDash([]);
+              ctx.beginPath();
+              ctx.moveTo(sp.x + 5, sp.y - 1);
+              ctx.lineTo(lx - 4, sp.y - 6);
+              ctx.stroke();
+            }
+            ctx.fillStyle = lblColor;
+            ctx.fillText(label, lx, sp.y - 6);
+            // 记录航班号标牌命中区（单击文字弹详情窗）
+            var lw = ctx.measureText(label).width;
+            _labelRects.push({trk: trk, x0: lx - 3, y0: sp.y - 19, x1: lx + lw + 3, y1: sp.y - 4});
 
             // 高度变化箭头
             var trendChar = '>';
@@ -2466,7 +2490,7 @@ function esc(s) {
 
             ctx.font = '10px Consolas, monospace';
             ctx.fillStyle = altLblColor;
-            ctx.fillText(altStr + trendChar + '  ' + spdStr, sp.x + 8, sp.y + 6);
+            ctx.fillText(altStr + trendChar + '  ' + spdStr, lx, sp.y + 6);
           }
         }
       }
@@ -3723,6 +3747,10 @@ function esc(s) {
     setupTrailInteraction();
   }
 
+  // ── 航迹选中高亮 ──
+  var _selectedTrack = null;   // 选中航迹标识 {key: callsign||ssr}
+  var _labelRects = [];        // 本次 drawMap 各航班号标牌的命中矩形 {trk,x0,y0,x1,y1}
+
   // ── 缩放与拖动 + 悬停检测 ──
   var isDragging = false;
   var dragStartX, dragStartY;
@@ -3776,6 +3804,28 @@ function esc(s) {
       if (dx*dx + dy*dy <= TRACK_HIT_RADIUS * TRACK_HIT_RADIUS) {
         return trk;
       }
+    }
+    return null;
+  }
+
+  // 判断航迹是否处于选中高亮状态
+  function isTrackSelected(trk) {
+    if (!_selectedTrack || !trk) return false;
+    var key = (trk.callsign || trk.ssr || '').trim();
+    return !!key && _selectedTrack.key === key;
+  }
+
+  // 点击命中“航班号标牌文字”（返回该航迹；未命中返回 null）
+  function findTrackLabelAt(canvas, clientX, clientY) {
+    if (!_labelRects.length || !geo) return null;
+    var rect = canvas.getBoundingClientRect();
+    var sx = geo.screenW / rect.width;
+    var sy = geo.screenH / rect.height;
+    var px = (clientX - rect.left) * sx;
+    var py = (clientY - rect.top) * sy;
+    for (var i = _labelRects.length - 1; i >= 0; i--) {
+      var r = _labelRects[i];
+      if (px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1) return r.trk;
     }
     return null;
   }
@@ -3980,12 +4030,25 @@ function esc(s) {
         return;
       }
 
-      // ── 左键：点航迹看详情；否则长按(或移动)才拖拽地图 ──
+      // ── 左键：点航班号标牌弹详情；点航迹圆选中/取消高亮；否则长按(或移动)才拖拽地图 ──
       if (e.button !== 0) return;
+      // 航班号标牌文字 → 航班详情窗
+      var hitLbl = findTrackLabelAt(canvas, e.clientX, e.clientY);
+      if (hitLbl) {
+        e.preventDefault();
+        showTrackPopup(hitLbl);
+        return;
+      }
+      // 航迹中心圆 → 选中高亮（显示预计线+白色标牌/引线；再次点击取消）
       hit = findTrackAt(canvas, e.clientX, e.clientY);
       if (hit) {
         e.preventDefault();
-        showTrackPopup(hit);
+        var key = (hit.callsign || hit.ssr || '').trim();
+        if (key) {
+          if (_selectedTrack && _selectedTrack.key === key) _selectedTrack = null;
+          else _selectedTrack = {key: key};
+          drawMap();
+        }
         return;
       }
       _panArmed = true;
