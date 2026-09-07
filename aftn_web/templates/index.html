@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATC综合数据中心 v2.2.44</title>
+<title>ATC综合数据中心 v2.2.45</title>
 <style>
 /* ══════════════════════════════════════════════
    Dark Professional Theme
@@ -448,7 +448,7 @@ canvas#radarMap {
 
 <div class="header">
   <h1>🛩 ATC综合数据中心</h1>
-  <span class="badge">v2.2.44</span>
+  <span class="badge">v2.2.45</span>
 </div>
 
 <div class="tabs">
@@ -2461,17 +2461,8 @@ function esc(s) {
           ctx.textBaseline = 'bottom';
           var label = (trk.callsign || trk.ssr || '').trim();
           if (label) {
-            // 选中：标牌外移留出引线位，画白色标牌引线
-            var lx = sp.x + (sel ? 22 : 8);
-            if (sel) {
-              ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-              ctx.lineWidth = 1;
-              ctx.setLineDash([]);
-              ctx.beginPath();
-              ctx.moveTo(sp.x + 5, sp.y - 1);
-              ctx.lineTo(lx - 4, sp.y - 6);
-              ctx.stroke();
-            }
+            // 选中仅改颜色（白色），标牌位置/样式与未选中一致，不画引线不外移
+            var lx = sp.x + 8;
             ctx.fillStyle = lblColor;
             ctx.fillText(label, lx, sp.y - 6);
             // 记录航班号标牌命中区（单击文字弹详情窗）
@@ -3747,8 +3738,8 @@ function esc(s) {
     setupTrailInteraction();
   }
 
-  // ── 航迹选中高亮 ──
-  var _selectedTrack = null;   // 选中航迹标识 {key: callsign||ssr}
+  // ── 航迹选中高亮（可多个同时高亮；key=callsign||ssr，逐个点击取消） ──
+  var _selectedTracks = {};   // key → true
   var _labelRects = [];        // 本次 drawMap 各航班号标牌的命中矩形 {trk,x0,y0,x1,y1}
 
   // ── 缩放与拖动 + 悬停检测 ──
@@ -3808,11 +3799,11 @@ function esc(s) {
     return null;
   }
 
-  // 判断航迹是否处于选中高亮状态
+  // 判断航迹是否处于选中高亮状态（支持多个）
   function isTrackSelected(trk) {
-    if (!_selectedTrack || !trk) return false;
+    if (!_selectedTracks || !trk) return false;
     var key = (trk.callsign || trk.ssr || '').trim();
-    return !!key && _selectedTrack.key === key;
+    return !!key && _selectedTracks[key] === true;
   }
 
   // 点击命中“航班号标牌文字”（返回该航迹；未命中返回 null）
@@ -4039,14 +4030,14 @@ function esc(s) {
         showTrackPopup(hitLbl);
         return;
       }
-      // 航迹中心圆 → 选中高亮（显示预计线+白色标牌/引线；再次点击取消）
+      // 航迹中心圆 → 选中/取消高亮（可多个同时高亮，逐个点击取消）
       hit = findTrackAt(canvas, e.clientX, e.clientY);
       if (hit) {
         e.preventDefault();
         var key = (hit.callsign || hit.ssr || '').trim();
         if (key) {
-          if (_selectedTrack && _selectedTrack.key === key) _selectedTrack = null;
-          else _selectedTrack = {key: key};
+          if (_selectedTracks[key]) delete _selectedTracks[key];
+          else _selectedTracks[key] = true;
           drawMap();
         }
         return;
